@@ -3,12 +3,14 @@
   "version": "0.1.0",
   "private": true,
   "engines": {
-    "node": ">=22.13.0"
+    "node": ">=22.18.0"
   },
   "scripts": {
-    "dev": "vinext dev",
+    "dev": "node reader/serve.mjs dev",
+    "reader:setup": "node reader/setup.mjs",
+    "test": "node --test tests/*.test.mjs",
     "build": "vinext build",
-    "start": "vinext start",
+    "start": "node reader/serve.mjs start",
     "lint": "eslint . --ignore-pattern dist --ignore-pattern .next",
     "db:generate": "drizzle-kit generate"
   },

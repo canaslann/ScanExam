@@ -26,6 +26,12 @@ export type ScanDraft = {
   scores: [string, string, string, string, string];
   writtenTotal: string;
   confidence: Record<string, number>;
+  reviewFields?: string[];
+  warnings?: string[];
+  alternatives?: Record<string, string[]>;
+  engine?: "local-vision" | "tesseract";
+  checkMode?: "single" | "double";
+  elapsedMs?: number;
 };
 
 export type ScanOutput = ScanDraft & {

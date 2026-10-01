@@ -1,5 +1,7 @@
 "use client";
 
+/* eslint-disable @next/next/no-img-element -- Uploaded local/data URLs are already resized and must not be sent to an image optimizer. */
+
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
   AlertTriangle, Camera, CheckCircle2, FileSpreadsheet, LoaderCircle,
@@ -21,6 +23,19 @@ import {
   type ExamState, type PcCode, type ScanDraft, type StudentResult,
 } from "@/lib/exam";
 import { readExamPaper } from "@/lib/ocr";
+import { parseScore, sumScores, type CheckMode } from "@/lib/reader-contract";
+
+type ReaderStatus = { ready: boolean; model: string; message: string };
+
+async function fetchReaderStatus(): Promise<ReaderStatus> {
+  try {
+    const response = await fetch("/api/reader", { signal: AbortSignal.timeout(5000) });
+    if (!response.ok) throw new Error("status");
+    return await response.json() as ReaderStatus;
+  } catch {
+    return { ready: false, model: "", message: "Yerel okuyucuya ulaşılamıyor. Bilgisayarda npm run reader:setup ve npm run dev çalıştırın." };
+  }
+}
 
 const STORAGE_KEY = "sinav-tarayici-v1";
 const PC_OPTIONS: PcCode[] = ["PÇ1", "PÇ2", "PÇ3", "PÇ4", "PÇ5"];
@@ -41,6 +56,7 @@ export function ExamApp() {
   const cameraInputRef = useRef<HTMLInputElement>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
   const streamRef = useRef<MediaStream | null>(null);
+  const scanAbortRef = useRef<AbortController | null>(null);
   const examRef = useRef<ExamState>(DEFAULT_EXAM);
   const [exam, setExam] = useState<ExamState>(DEFAULT_EXAM);
   const [hydrated, setHydrated] = useState(false);
@@ -51,16 +67,31 @@ export function ExamApp() {
   const [progressLabel, setProgressLabel] = useState("Model hazırlanıyor");
   const [reviewing, setReviewing] = useState(false);
   const [cameraOpen, setCameraOpen] = useState(false);
+  const [checkMode, setCheckMode] = useState<CheckMode>("single");
+  const [readerStatus, setReaderStatus] = useState<ReaderStatus | null>(null);
+
+  async function refreshReaderStatus() {
+    setReaderStatus(await fetchReaderStatus());
+  }
 
   useEffect(() => {
-    try {
-      const saved = window.localStorage.getItem(STORAGE_KEY);
-      if (saved) setExam(JSON.parse(saved) as ExamState);
-    } catch {
-      toast.warning("Önceki cihaz kaydı açılamadı; yeni bir sınavla devam ediliyor.");
-    } finally {
-      setHydrated(true);
-    }
+    let active = true;
+    void fetchReaderStatus().then((status) => { if (active) setReaderStatus(status); });
+    return () => { active = false; scanAbortRef.current?.abort(); };
+  }, []);
+
+  useEffect(() => {
+    let active = true;
+    queueMicrotask(() => {
+      if (!active) return;
+      try {
+        const saved = window.localStorage.getItem(STORAGE_KEY);
+        if (saved) setExam(JSON.parse(saved) as ExamState);
+      } catch {
+        toast.warning("Önceki cihaz kaydı açılamadı; yeni bir sınavla devam ediliyor.");
+      } finally { setHydrated(true); }
+    });
+    return () => { active = false; };
   }, []);
 
   useEffect(() => {
@@ -123,19 +154,19 @@ export function ExamApp() {
     };
   }, [exam.results]);
 
-  const calculatedTotal = draft.scores.reduce((sum, value) => sum + toNumber(value), 0);
-  const totalMismatch = draft.writtenTotal !== "" && Math.abs(calculatedTotal - toNumber(draft.writtenTotal)) > 0.001;
+  const calculatedTotal = sumScores(draft.scores);
+  const writtenValue = parseScore(draft.writtenTotal);
+  const totalMismatch = calculatedTotal !== null && writtenValue !== null && Math.abs(calculatedTotal - writtenValue) > 0.001;
 
   function updateExam(patch: Partial<ExamState>) {
     setExam((current) => ({ ...current, ...patch }));
   }
 
-  function updateDraft<K extends keyof ScanDraft>(key: K, value: ScanDraft[K]) {
-    setDraft((current) => ({ ...current, [key]: value }));
-  }
-
   async function handleFile(file?: File) {
     if (!file) return;
+    scanAbortRef.current?.abort();
+    const controller = new AbortController();
+    scanAbortRef.current = controller;
     if (previewUrl) URL.revokeObjectURL(previewUrl);
     const nextUrl = URL.createObjectURL(file);
     setPreviewUrl(nextUrl);
@@ -146,9 +177,17 @@ export function ExamApp() {
     setProgressLabel("Görüntü hazırlanıyor");
     try {
       const result = await readExamPaper(file, (nextProgress, label) => {
+        if (controller.signal.aborted) return;
         setProgress(Math.round(nextProgress * 100));
         setProgressLabel(label);
-      });
+      }, { checkMode, signal: controller.signal, onImagePrepared: (image) => {
+        if (!controller.signal.aborted) { URL.revokeObjectURL(nextUrl); setPreviewUrl(image); }
+      } });
+      if (controller.signal.aborted) return;
+      if (examRef.current.results.length > 0 && result.courseCode && result.courseCode.toLocaleUpperCase("tr-TR") !== examRef.current.courseCode.toLocaleUpperCase("tr-TR")) {
+        result.warnings = [...(result.warnings || []), `Kâğıttaki ders kodu (${result.courseCode}) aktif sınavla eşleşmiyor. Kaydetmeden önce sınav seçimini kontrol edin.`];
+        result.reviewFields = [...(result.reviewFields || []), "courseCode"];
+      }
       setDraft(result);
       if (examRef.current.results.length === 0) {
         setExam((current) => ({
@@ -159,13 +198,16 @@ export function ExamApp() {
         }));
       }
       setProgress(100);
-      toast.success("Okuma tamamlandı. Sarı alanları kontrol edin.");
+      toast.success(`Okuma tamamlandı${result.elapsedMs ? ` · ${(result.elapsedMs / 1000).toFixed(1)} sn` : ""}. Bilgileri kontrol edip onaylayın.`);
     } catch (error) {
-      console.error(error);
+      if (controller.signal.aborted) return;
       setDraft(EMPTY_DRAFT);
-      toast.warning("Otomatik okuma tamamlanamadı. Alanları elle doğrulayarak devam edebilirsiniz.");
+      const message = error instanceof Error ? error.message : "Okuma tamamlanamadı.";
+      setDraft({ ...EMPTY_DRAFT, warnings: [message] });
+      toast.warning(message);
     } finally {
-      setProcessing(false);
+      if (!controller.signal.aborted) setProcessing(false);
+      void refreshReaderStatus();
     }
   }
 
@@ -193,6 +235,7 @@ export function ExamApp() {
   }
 
   function startManualEntry() {
+    scanAbortRef.current?.abort();
     if (previewUrl) URL.revokeObjectURL(previewUrl);
     setPreviewUrl(null);
     setDraft(EMPTY_DRAFT);
@@ -210,16 +253,25 @@ export function ExamApp() {
       toast.error("Bu öğrenci numarası aktif sınava daha önce eklenmiş.");
       return;
     }
+    if (!/^\d{5,20}$/.test(draft.studentNumber.trim())) {
+      toast.error("Öğrenci numarası yalnızca rakamlardan oluşmalı; baştaki sıfırları koruyun.");
+      return;
+    }
+    if (draft.scores.some((score) => parseScore(score) === null) || parseScore(draft.writtenTotal) === null) {
+      toast.error("Puanlar ve toplam not 0–100 arasında geçerli sayılar olmalı.");
+      return;
+    }
     const scores = draft.scores.map(toNumber) as StudentResult["scores"];
     const lowConfidence = Object.values(draft.confidence).some((value) => value < 60);
     const result: StudentResult = {
-      id: crypto.randomUUID(),
+      id: typeof crypto.randomUUID === "function" ? crypto.randomUUID()
+        : Array.from(crypto.getRandomValues(new Uint8Array(16)), (byte) => byte.toString(16).padStart(2, "0")).join(""),
       studentNumber: draft.studentNumber.trim(),
       fullName: draft.fullName.trim(),
       scores,
       writtenTotal: toNumber(draft.writtenTotal),
       calculatedTotal: scores.reduce((sum, score) => sum + score, 0),
-      needsReview: lowConfidence || totalMismatch,
+      needsReview: lowConfidence || totalMismatch || Boolean(draft.reviewFields?.length),
       createdAt: new Date().toISOString(),
     };
     setExam((current) => ({ ...current, results: [...current.results, result] }));
@@ -228,6 +280,8 @@ export function ExamApp() {
   }
 
   function resetScan() {
+    scanAbortRef.current?.abort();
+    scanAbortRef.current = null;
     if (previewUrl) URL.revokeObjectURL(previewUrl);
     setPreviewUrl(null);
     setDraft(EMPTY_DRAFT);
@@ -285,7 +339,7 @@ export function ExamApp() {
                         next[index] = value as PcCode;
                         updateExam({ pcMap: next });
                       }}>
-                        <SelectTrigger className="h-8 w-full justify-center border-0 bg-slate-50 px-2 font-bold shadow-none"><SelectValue /></SelectTrigger>
+                        <SelectTrigger aria-label={`S${index + 1} PÇ eşleşmesi`} className="h-8 w-full justify-center gap-0 border-0 bg-slate-50 px-1 text-xs font-bold shadow-none [&_svg]:hidden sm:gap-1 sm:px-2 sm:[&_svg]:block"><SelectValue>{pc}</SelectValue></SelectTrigger>
                         <SelectContent>{PC_OPTIONS.map((option) => <SelectItem key={option} value={option}>{option}</SelectItem>)}</SelectContent>
                       </Select>
                     </div>
@@ -296,7 +350,7 @@ export function ExamApp() {
           </Card>
 
           {!reviewing ? (
-            <ScanCard onCamera={openCamera} onFile={() => galleryInputRef.current?.click()} onManual={startManualEntry} />
+            <ScanCard onCamera={openCamera} onFile={() => galleryInputRef.current?.click()} onManual={startManualEntry} checkMode={checkMode} onCheckMode={setCheckMode} readerStatus={readerStatus} onRefresh={() => void refreshReaderStatus()} />
           ) : (
             <ReviewCard draft={draft} setDraft={setDraft} previewUrl={previewUrl} processing={processing} progress={progress} progressLabel={progressLabel} calculatedTotal={calculatedTotal} totalMismatch={totalMismatch} onSave={saveResult} onCancel={resetScan} />
           )}
@@ -339,14 +393,57 @@ export function ExamApp() {
   );
 }
 
-function ScanCard({ onCamera, onFile, onManual }: { onCamera: () => void; onFile: () => void; onManual: () => void }) {
-  return <Card className="scan-card overflow-hidden border-0 text-white shadow-xl shadow-slate-900/10"><CardContent className="relative p-5 sm:p-7"><div className="pointer-events-none absolute inset-0 opacity-35" aria-hidden="true"><div className="scan-grid absolute inset-0" /><div className="absolute -right-12 -top-20 size-64 rounded-full bg-cyan-300/20 blur-3xl" /></div><div className="relative"><div className="mb-5 flex items-start justify-between gap-4"><div><p className="text-xs font-bold uppercase tracking-[0.16em] text-cyan-200">Yeni kâğıt</p><h1 className="mt-1 text-2xl font-bold tracking-tight sm:text-3xl">Üst bölümü çerçeveye yerleştirin</h1><p className="mt-2 max-w-xl text-sm leading-6 text-slate-300">Ad soyad, öğrenci numarası, soru puanları ve toplam not cihazda okunacak.</p></div><div className="hidden size-14 place-items-center rounded-2xl border border-white/15 bg-white/10 sm:grid"><Camera className="size-7 text-cyan-200" aria-hidden="true" /></div></div><div className="paper-frame relative mb-5 aspect-[2.35/1] overflow-hidden rounded-2xl border border-dashed border-cyan-200/60 bg-slate-950/30"><span className="corner corner-tl" /><span className="corner corner-tr" /><span className="corner corner-bl" /><span className="corner corner-br" /><div className="absolute inset-0 grid place-items-center px-8 text-center"><div><ScanLine className="mx-auto mb-2 size-8 text-cyan-200" aria-hidden="true" /><p className="text-sm font-semibold">Sınav kâğıdının üst tablosu</p><p className="mt-1 text-xs text-slate-400">Kenarların tamamı çerçevede görünmeli</p></div></div></div><div className="grid gap-3 sm:grid-cols-2"><Button size="lg" className="h-12 bg-cyan-300 font-bold text-slate-950 hover:bg-cyan-200" onClick={onCamera}><Camera className="size-5" />Kamerayı aç</Button><Button size="lg" variant="outline" className="h-12 border-white/20 bg-white/5 text-white hover:bg-white/10 hover:text-white" onClick={onFile}><Upload className="size-5" />Fotoğraf seç</Button></div><button type="button" className="mx-auto mt-4 flex items-center gap-2 text-sm text-slate-300 underline-offset-4 hover:text-white hover:underline" onClick={onManual}><PencilLine className="size-4" />Kâğıt olmadan elle giriş yap</button></div></CardContent></Card>;
+function ScanCard({ onCamera, onFile, onManual, checkMode, onCheckMode, readerStatus, onRefresh }: {
+  onCamera: () => void; onFile: () => void; onManual: () => void; checkMode: CheckMode;
+  onCheckMode: (mode: CheckMode) => void; readerStatus: ReaderStatus | null; onRefresh: () => void;
+}) {
+  return <Card className="scan-card overflow-hidden border-0 text-white shadow-xl shadow-slate-900/10">
+    <CardContent className="relative p-5 sm:p-7">
+      <div className="pointer-events-none absolute inset-0 opacity-35" aria-hidden="true"><div className="scan-grid absolute inset-0" /><div className="absolute -right-12 -top-20 size-64 rounded-full bg-cyan-300/20 blur-3xl" /></div>
+      <div className="relative">
+        <div className="mb-5 flex items-start justify-between gap-4"><div><p className="text-xs font-bold uppercase tracking-[0.16em] text-cyan-200">Yeni kâğıt</p><h1 className="mt-1 text-2xl font-bold tracking-tight sm:text-3xl">Üst bölümü çerçeveye yerleştirin</h1><p className="mt-2 max-w-xl text-sm leading-6 text-slate-300">Fotoğraf bilgisayarınızdaki okuyucuda işlenir. Ad soyad, numara ve puanlar onayınızdan sonra tabloya eklenir.</p></div><div className="hidden size-14 place-items-center rounded-2xl border border-white/15 bg-white/10 sm:grid"><Camera className="size-7 text-cyan-200" aria-hidden="true" /></div></div>
+        <div className={`mb-4 flex items-start gap-2 rounded-xl border px-3 py-2 text-xs ${readerStatus?.ready ? "border-emerald-300/30 bg-emerald-400/10 text-emerald-100" : "border-amber-300/30 bg-amber-400/10 text-amber-100"}`} role="status">
+          {readerStatus?.ready ? <CheckCircle2 className="mt-0.5 size-4 shrink-0" /> : <AlertTriangle className="mt-0.5 size-4 shrink-0" />}
+          <p className="flex-1 leading-5">{readerStatus?.message || "Yerel okuyucu kontrol ediliyor…"}</p>
+          <button type="button" className="rounded p-1 hover:bg-white/10" aria-label="Okuyucu durumunu yenile" onClick={onRefresh}><RotateCcw className="size-4" /></button>
+        </div>
+        <div className="paper-frame relative mb-5 aspect-[2.35/1] overflow-hidden rounded-2xl border border-dashed border-cyan-200/60 bg-slate-950/30"><span className="corner corner-tl" /><span className="corner corner-tr" /><span className="corner corner-bl" /><span className="corner corner-br" /><div className="absolute inset-0 grid place-items-center px-8 text-center"><div><ScanLine className="mx-auto mb-2 size-8 text-cyan-200" aria-hidden="true" /><p className="text-sm font-semibold">Sınav kâğıdının üst tablosu</p><p className="mt-1 text-xs text-slate-400">Öğrenci bilgileri ve Puan / Not satırları birlikte görünmeli</p></div></div></div>
+        <fieldset className="mb-4"><legend className="mb-2 text-xs font-semibold text-slate-300">Okuma kontrolü</legend><div className="grid grid-cols-2 gap-2">{(["single", "double"] as const).map((mode) => <label key={mode} className={`cursor-pointer rounded-xl border px-3 py-2 text-sm ${checkMode === mode ? "border-cyan-300 bg-cyan-300/10" : "border-white/15 bg-white/5"}`}><input type="radio" name="check-mode" className="mr-2 accent-cyan-300" checked={checkMode === mode} onChange={() => onCheckMode(mode)} />{mode === "single" ? "Tek okuma" : "Çift kontrol"}<span className="mt-1 block text-[11px] text-slate-300">{mode === "single" ? "Daha hızlı · öğretmen onayı" : "İki okuma karşılaştırılır · daha uzun"}</span></label>)}</div></fieldset>
+        <div className="grid gap-3 sm:grid-cols-2"><Button size="lg" className="h-12 bg-cyan-300 font-bold text-slate-950 hover:bg-cyan-200" onClick={onCamera}><Camera className="size-5" />Kamerayı aç</Button><Button size="lg" variant="outline" className="h-12 border-white/20 bg-white/5 text-white hover:bg-white/10 hover:text-white" onClick={onFile}><Upload className="size-5" />Fotoğraf seç</Button></div>
+        <button type="button" className="mx-auto mt-4 flex items-center gap-2 text-sm text-slate-300 underline-offset-4 hover:text-white hover:underline" onClick={onManual}><PencilLine className="size-4" />Kâğıt olmadan elle giriş yap</button>
+      </div>
+    </CardContent>
+  </Card>;
 }
 
-function ReviewCard({ draft, setDraft, previewUrl, processing, progress, progressLabel, calculatedTotal, totalMismatch, onSave, onCancel }: { draft: ScanDraft; setDraft: React.Dispatch<React.SetStateAction<ScanDraft>>; previewUrl: string | null; processing: boolean; progress: number; progressLabel: string; calculatedTotal: number; totalMismatch: boolean; onSave: () => void; onCancel: () => void }) {
+function ReviewCard({ draft, setDraft, previewUrl, processing, progress, progressLabel, calculatedTotal, totalMismatch, onSave, onCancel }: { draft: ScanDraft; setDraft: React.Dispatch<React.SetStateAction<ScanDraft>>; previewUrl: string | null; processing: boolean; progress: number; progressLabel: string; calculatedTotal: number | null; totalMismatch: boolean; onSave: () => void; onCancel: () => void }) {
   const setScore = (index: number, value: string) => setDraft((current) => { const scores = [...current.scores] as ScanDraft["scores"]; scores[index] = value; return { ...current, scores }; });
   const confidence = (key: string) => draft.confidence[key];
-  return <Card className="overflow-hidden border-slate-200 shadow-sm"><CardHeader className="border-b border-slate-100 bg-slate-50/70"><div className="flex items-start justify-between gap-3"><div><p className="text-xs font-bold uppercase tracking-[0.15em] text-primary">Kontrol</p><CardTitle className="mt-1 text-xl">Okunan bilgileri doğrulayın</CardTitle></div><Button size="sm" variant="ghost" onClick={onCancel}><RotateCcw className="size-4" />Baştan al</Button></div></CardHeader><CardContent className="pt-5">{previewUrl ? <div className="mb-5 overflow-hidden rounded-xl border bg-slate-100"><img src={previewUrl} alt="Taranan sınav kâğıdı" className="max-h-52 w-full object-cover object-top" /></div> : null}{processing ? <div className="rounded-2xl border border-cyan-100 bg-cyan-50 p-5"><div className="mb-3 flex items-center gap-3"><LoaderCircle className="size-5 animate-spin text-cyan-700" /><div><p className="font-semibold text-cyan-950">El yazısı okunuyor</p><p className="text-sm text-cyan-800">{progressLabel}</p></div></div><Progress value={progress} className="bg-cyan-100 [&_[data-slot=progress-indicator]]:bg-cyan-600" /><p className="mt-2 text-right text-xs font-semibold text-cyan-800">%{progress}</p></div> : <><div className="grid gap-4 sm:grid-cols-2"><ReviewField label="Ad soyad" id="full-name" confidence={confidence("fullName")}><Input id="full-name" value={draft.fullName} onChange={(event) => setDraft((current) => ({ ...current, fullName: event.target.value }))} /></ReviewField><ReviewField label="Öğrenci numarası" id="student-number" confidence={confidence("studentNumber")}><Input id="student-number" inputMode="numeric" value={draft.studentNumber} onChange={(event) => setDraft((current) => ({ ...current, studentNumber: event.target.value.replace(/\D/g, "") }))} /></ReviewField></div><div className="mt-5"><Label>Soru puanları</Label><div className="mt-2 grid grid-cols-5 gap-2">{draft.scores.map((score, index) => <ReviewField key={index} label={`S${index + 1}`} id={`score-${index}`} confidence={confidence(`s${index + 1}`)} compact><Input id={`score-${index}`} inputMode="decimal" className="px-2 text-center font-bold" value={score} onChange={(event) => setScore(index, event.target.value.replace(/[^0-9,.-]/g, ""))} /></ReviewField>)}</div></div><div className={`mt-5 grid gap-3 rounded-2xl border p-4 sm:grid-cols-[1fr_auto] ${totalMismatch ? "border-amber-300 bg-amber-50" : "border-emerald-200 bg-emerald-50"}`}><ReviewField label="Kâğıtta yazan toplam" id="written-total" confidence={confidence("writtenTotal")}><Input id="written-total" inputMode="decimal" className="bg-white text-lg font-bold" value={draft.writtenTotal} onChange={(event) => setDraft((current) => ({ ...current, writtenTotal: event.target.value.replace(/[^0-9,.-]/g, "") }))} /></ReviewField><div className="flex min-w-36 items-center gap-3 rounded-xl bg-white px-4 py-2"><div>{totalMismatch ? <AlertTriangle className="size-5 text-amber-600" /> : <CheckCircle2 className="size-5 text-emerald-600" />}</div><div><p className="text-xs text-muted-foreground">Hesaplanan</p><p className="text-xl font-bold tabular-nums">{calculatedTotal}</p></div></div>{totalMismatch ? <p className="text-sm font-medium text-amber-800 sm:col-span-2">Yazılan toplam ile soru puanlarının toplamı uyuşmuyor.</p> : null}</div><div className="mt-5 flex flex-col-reverse gap-3 sm:flex-row sm:justify-end"><Button variant="outline" onClick={onCancel}>İptal</Button><Button className="bg-emerald-600 hover:bg-emerald-700" onClick={onSave}><CheckCircle2 className="size-4" />Onayla ve sonraki kâğıt</Button></div></>}</CardContent></Card>;
+  const fieldStatus = (key: string) => ({ confidence: confidence(key), uncertain: draft.reviewFields?.includes(key)
+    || (draft.engine === "local-vision" && (key === "fullName" || key === "studentNumber")), alternatives: draft.alternatives?.[key] });
+  const totalNeedsReview = totalMismatch || calculatedTotal === null || parseScore(draft.writtenTotal) === null;
+  return <Card className="overflow-hidden border-slate-200 shadow-sm">
+    <CardHeader className="border-b border-slate-100 bg-slate-50/70"><div className="flex items-start justify-between gap-3"><div><p className="text-xs font-bold uppercase tracking-[0.15em] text-primary">Kontrol</p><CardTitle className="mt-1 text-xl">Okunan bilgileri doğrulayın</CardTitle></div><Button size="sm" variant="ghost" onClick={onCancel}><RotateCcw className="size-4" />{processing ? "Okumayı iptal et" : "Baştan al"}</Button></div></CardHeader>
+    <CardContent className="pt-5">
+      {previewUrl ? <details className="mb-5 overflow-hidden rounded-xl border bg-slate-100" open><summary className="cursor-pointer px-3 py-2 text-xs font-medium text-slate-600">Okuyucuya gönderilen üst tablo · aç / kapat</summary><img src={previewUrl} alt="Taranan sınav kâğıdının üst tablosu" className="w-full" /></details> : null}
+      {processing ? <div className="rounded-2xl border border-cyan-100 bg-cyan-50 p-5" role="status"><div className="mb-3 flex items-center gap-3"><LoaderCircle className="size-5 animate-spin text-cyan-700" /><div><p className="font-semibold text-cyan-950">El yazısı okunuyor</p><p className="text-sm text-cyan-800">{progressLabel}</p></div></div><Progress value={progress} className="animate-pulse bg-cyan-100 [&_[data-slot=progress-indicator]]:bg-cyan-600" /><p className="mt-2 text-xs text-cyan-800">İlk kâğıtta modelin hazırlanması daha uzun sürebilir. Sonuçlar otomatik kaydedilmez.</p></div> : <>
+        {draft.elapsedMs ? <p className="mb-3 text-xs text-slate-500">{draft.checkMode === "double" ? "Çift kontrol" : "Tek okuma"} · {(draft.elapsedMs / 1000).toFixed(1)} sn · Bilgileri fotoğrafla karşılaştırın.</p> : null}
+        {draft.warnings?.map((warning, index) => <p key={index} role="alert" className="mb-3 rounded-xl border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900">{warning}</p>)}
+        {(["courseCode", "courseName", "pcMap"] as const).filter((key) => draft.alternatives?.[key]?.length).map((key) => <p key={key} className="mb-3 rounded-xl border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900"><strong>{key === "courseCode" ? "Ders kodu" : key === "courseName" ? "Ders adı" : "Soru–PÇ eşleşmesi"} okumaları:</strong> {draft.alternatives?.[key].join(" / ")}. Üstteki aktif sınav alanını kontrol edin.</p>)}
+        <div className="grid gap-4 sm:grid-cols-2">
+          <ReviewField label="Ad soyad" id="full-name" {...fieldStatus("fullName")}><Input id="full-name" value={draft.fullName} onChange={(event) => setDraft((current) => ({ ...current, fullName: event.target.value }))} /></ReviewField>
+          <ReviewField label="Öğrenci numarası" id="student-number" {...fieldStatus("studentNumber")}><Input id="student-number" inputMode="numeric" value={draft.studentNumber} onChange={(event) => setDraft((current) => ({ ...current, studentNumber: event.target.value.replace(/\D/g, "") }))} /></ReviewField>
+        </div>
+        <div className="mt-5"><Label>Soru puanları</Label><div className="mt-2 grid grid-cols-5 gap-2">{draft.scores.map((score, index) => <ReviewField key={index} label={`S${index + 1}`} id={`score-${index}`} {...fieldStatus(`s${index + 1}`)} compact><Input id={`score-${index}`} inputMode="decimal" className="px-2 text-center font-bold" value={score} onChange={(event) => setScore(index, event.target.value.replace(/[^0-9,.-]/g, ""))} /></ReviewField>)}</div></div>
+        <div className={`mt-5 grid gap-3 rounded-2xl border p-4 sm:grid-cols-[1fr_auto] ${totalNeedsReview ? "border-amber-300 bg-amber-50" : "border-emerald-200 bg-emerald-50"}`}>
+          <ReviewField label="Kâğıtta yazan toplam" id="written-total" {...fieldStatus("writtenTotal")}><Input id="written-total" inputMode="decimal" className="bg-white text-lg font-bold" value={draft.writtenTotal} onChange={(event) => setDraft((current) => ({ ...current, writtenTotal: event.target.value.replace(/[^0-9,.-]/g, "") }))} /></ReviewField>
+          <div className="flex min-w-36 items-center gap-3 rounded-xl bg-white px-4 py-2"><div>{totalNeedsReview ? <AlertTriangle className="size-5 text-amber-600" /> : <CheckCircle2 className="size-5 text-emerald-600" />}</div><div><p className="text-xs text-muted-foreground">Hesaplanan</p><p className="text-xl font-bold tabular-nums">{calculatedTotal ?? "—"}</p></div></div>
+          {totalMismatch ? <p className="text-sm font-medium text-amber-800 sm:col-span-2">Yazılan toplam ile puanlar uyuşmuyor. Kâğıttaki değerler korunuyor.</p> : calculatedTotal === null ? <p className="text-sm text-amber-800 sm:col-span-2">Eksik veya geçersiz puanlar nedeniyle toplam hesaplanmadı.</p> : null}
+        </div>
+        <div className="mt-5 flex flex-col-reverse gap-3 sm:flex-row sm:justify-end"><Button variant="outline" onClick={onCancel}>İptal</Button><Button className="bg-emerald-600 hover:bg-emerald-700" onClick={onSave}><CheckCircle2 className="size-4" />Onayla ve sonraki kâğıt</Button></div>
+      </>}
+    </CardContent>
+  </Card>;
 }
 
 function ResultsTable({ exam, onRemove }: { exam: ExamState; onRemove: (id: string) => void }) {
@@ -358,9 +455,9 @@ function ResultsTable({ exam, onRemove }: { exam: ExamState; onRemove: (id: stri
   return <Card className="overflow-hidden border-slate-200 shadow-sm lg:col-span-2"><CardHeader className="flex-row items-center justify-between border-b bg-white"><div><p className="text-xs font-bold uppercase tracking-[0.15em] text-primary">Kayıtlar</p><CardTitle className="mt-1 text-xl">Öğrenci sonuçları</CardTitle></div><Badge variant="outline">{exam.results.length} kayıt</Badge></CardHeader><CardContent className="p-0"><Table><TableHeader><TableRow className="bg-slate-50"><TableHead>Öğrenci No</TableHead><TableHead>Ad Soyad</TableHead>{exam.pcMap.map((pc, index) => <TableHead key={index} className="text-center">S{index + 1}<span className="block text-[11px] text-muted-foreground">{pc}</span></TableHead>)}<TableHead className="text-center">Toplam</TableHead><TableHead className="w-12"><span className="sr-only">İşlem</span></TableHead></TableRow></TableHeader><TableBody>{exam.results.map((result) => <TableRow key={result.id}><TableCell className="font-mono text-xs">{result.studentNumber}</TableCell><TableCell className="font-medium">{result.fullName}{result.needsReview ? <Badge variant="outline" className="ml-2 border-amber-200 bg-amber-50 text-amber-700">kontrol</Badge> : null}</TableCell>{result.scores.map((score, index) => <TableCell key={index} className="text-center tabular-nums">{score}</TableCell>)}<TableCell className="text-center font-bold tabular-nums">{result.writtenTotal}</TableCell><TableCell><Button size="icon-sm" variant="ghost" aria-label={`${result.fullName} kaydını sil`} onClick={() => onRemove(result.id)}><Trash2 className="size-4 text-slate-400" /></Button></TableCell></TableRow>)}</TableBody><TableFooter><TableRow><TableCell /><TableCell>ORTALAMA</TableCell>{averages.map((value, index) => <TableCell key={index} className="text-center font-bold tabular-nums">{value.toFixed(2).replace(".", ",")}</TableCell>)}<TableCell /></TableRow></TableFooter></Table></CardContent></Card>;
 }
 
-function ReviewField({ label, id, confidence, compact, children }: { label: string; id: string; confidence?: number; compact?: boolean; children: React.ReactNode }) {
-  const low = confidence !== undefined && confidence < 60;
-  return <div className="space-y-1.5"><div className="flex min-h-5 items-center justify-between gap-1"><Label htmlFor={id} className={compact ? "text-xs" : undefined}>{label}</Label>{confidence !== undefined ? <span className={`inline-flex items-center gap-1 text-[11px] font-semibold ${low ? "text-amber-700" : "text-emerald-700"}`}>{low ? <AlertTriangle className="size-3" /> : <CheckCircle2 className="size-3" />}%{Math.round(confidence)}</span> : null}</div>{children}</div>;
+function ReviewField({ label, id, confidence, uncertain, alternatives, compact, children }: { label: string; id: string; confidence?: number; uncertain?: boolean; alternatives?: string[]; compact?: boolean; children: React.ReactNode }) {
+  const low = uncertain || (confidence !== undefined && confidence < 60);
+  return <div className="space-y-1.5"><div className="flex min-h-5 items-center justify-between gap-1"><Label htmlFor={id} className={compact ? "text-xs" : undefined}>{label}</Label>{low ? <span className="inline-flex items-center gap-1 text-[10px] font-semibold text-amber-700" title="Fotoğrafla karşılaştırın"><AlertTriangle className="size-3" /><span className={compact ? "sr-only" : ""}>Kontrol</span></span> : confidence !== undefined ? <span className="text-[11px] text-slate-500">%{Math.round(confidence)}</span> : null}</div>{children}{alternatives?.length ? <p className="break-words text-[11px] leading-4 text-amber-800">Okumalar: {alternatives.join(" / ")}</p> : null}</div>;
 }
 
 function Field({ label, id, children }: { label: string; id: string; children: React.ReactNode }) { return <div className="space-y-2"><Label htmlFor={id}>{label}</Label>{children}</div>; }
