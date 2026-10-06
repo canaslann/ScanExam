@@ -29,7 +29,8 @@ test("a 78/80 mismatch never repairs a handwritten score or written total", () =
   assert.equal(result.writtenTotal, "80");
   assert.equal(sumScores(result.scores), 78);
   assert.ok(result.warnings.length);
-  assert.ok(result.reviewFields.includes("s4"));
+  assert.ok(result.reviewFields.includes("writtenTotal"));
+  assert.equal(result.reviewFields.some((key) => /^s\d+$/.test(key)), false);
 });
 test("blank scores are not treated as zero and missing totals are not inferred", () => {
   const result = normalizePaper(sample({ scores: ["15", "", "13", "20", "12"], writtenTotal: "" }));

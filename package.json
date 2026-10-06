@@ -7,6 +7,9 @@
   },
   "scripts": {
     "dev": "node reader/serve.mjs dev",
+    "phone": "node reader/phone.mjs",
+    "phone:setup": "node reader/phone.mjs --setup-only",
+    "phone:stop": "node reader/phone-stop.mjs",
     "reader:setup": "node reader/setup.mjs",
     "test": "node --test tests/*.test.mjs",
     "build": "vinext build",
@@ -35,6 +38,7 @@
     "react-hook-form": "^7.85.0",
     "react-resizable-panels": "^4.12.2",
     "recharts": "^3.8.0",
+    "sharp": "0.35.4",
     "sonner": "^2.0.8",
     "tailwind-merge": "3.6.0",
     "tesseract.js": "^7.0.0",

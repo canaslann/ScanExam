@@ -1,12 +1,24 @@
 import * as XLSX from "xlsx";
 
-export type PcCode = "PÇ1" | "PÇ2" | "PÇ3" | "PÇ4" | "PÇ5";
+export type PcCode = `PÇ${number}`;
+export const MAX_QUESTIONS = 30;
+export function validQuestionCount(value: unknown): value is number {
+  return (
+    typeof value === "number" &&
+    Number.isInteger(value) &&
+    value >= 1 &&
+    value <= MAX_QUESTIONS
+  );
+}
+export function validPcCode(value: unknown): value is PcCode {
+  return typeof value === "string" && /^PÇ[1-9]\d?$/.test(value);
+}
 
 export type StudentResult = {
   id: string;
   studentNumber: string;
   fullName: string;
-  scores: [number, number, number, number, number];
+  scores: number[];
   writtenTotal: number;
   calculatedTotal: number;
   needsReview: boolean;
@@ -16,14 +28,14 @@ export type StudentResult = {
 export type ExamState = {
   courseCode: string;
   courseName: string;
-  pcMap: [PcCode, PcCode, PcCode, PcCode, PcCode];
+  pcMap: PcCode[];
   results: StudentResult[];
 };
 
 export type ScanDraft = {
   studentNumber: string;
   fullName: string;
-  scores: [string, string, string, string, string];
+  scores: string[];
   writtenTotal: string;
   confidence: Record<string, number>;
   reviewFields?: string[];
@@ -61,14 +73,29 @@ export function toNumber(value: string): number {
   return Number.isFinite(parsed) ? parsed : 0;
 }
 
-export function pcTotals(scores: StudentResult["scores"], map: ExamState["pcMap"]) {
-  const totals: Record<PcCode, number> = { PÇ1: 0, PÇ2: 0, PÇ3: 0, PÇ4: 0, PÇ5: 0 };
-  scores.forEach((score, index) => { totals[map[index]] += score; });
+export function pcTotals(
+  scores: StudentResult["scores"],
+  map: ExamState["pcMap"],
+) {
+  const totals: Partial<Record<PcCode, number>> = {};
+  map.forEach((pc) => {
+    totals[pc] = 0;
+  });
+  scores.forEach((score, index) => {
+    const pc = map[index];
+    if (pc) totals[pc] = (totals[pc] || 0) + score;
+  });
   return totals;
 }
 
 function average(values: number[]) {
-  return values.length ? Number((values.reduce((sum, value) => sum + value, 0) / values.length).toFixed(2)) : 0;
+  return values.length
+    ? Number(
+        (values.reduce((sum, value) => sum + value, 0) / values.length).toFixed(
+          2,
+        ),
+      )
+    : 0;
 }
 
 function safeFilename(value: string) {
@@ -80,26 +107,53 @@ function safeFilename(value: string) {
     .toUpperCase();
 }
 
-export function exportExamWorkbook(exam: ExamState) {
+export function createExamWorkbook(exam: ExamState) {
+  if (
+    !validQuestionCount(exam.pcMap.length) ||
+    !exam.pcMap.every(validPcCode) ||
+    exam.results.some(
+      (row) =>
+        row.scores.length !== exam.pcMap.length ||
+        row.scores.some(
+          (score) => !Number.isFinite(score) || score < 0 || score > 100,
+        ) ||
+        !Number.isFinite(row.writtenTotal) ||
+        row.writtenTotal < 0 ||
+        row.writtenTotal > 100,
+    )
+  )
+    throw new Error("Excel için soru sayısı ve puanlar geçerli olmalı.");
+  const pcTypes = [...new Set(exam.pcMap)].sort(
+    (a, b) => Number(a.slice(2)) - Number(b.slice(2)),
+  );
   const headers = [
-    "Öğrenci No", "Ad Soyad",
+    "Öğrenci No",
+    "Ad Soyad",
     ...exam.pcMap.map((pc, index) => `S${index + 1} (${pc})`),
-    "PÇ1", "PÇ2", "PÇ3", "PÇ4", "PÇ5", "Toplam Not",
+    ...pcTypes,
+    "Toplam Not",
   ];
 
   const rows = exam.results.map((result) => {
     const totals = pcTotals(result.scores, exam.pcMap);
     return [
-      result.studentNumber, result.fullName, ...result.scores,
-      totals.PÇ1, totals.PÇ2, totals.PÇ3, totals.PÇ4, totals.PÇ5,
+      result.studentNumber,
+      result.fullName,
+      ...result.scores,
+      ...pcTypes.map((pc) => totals[pc] || 0),
       result.writtenTotal,
     ];
   });
 
-  const numericColumns = Array.from({ length: 11 }, (_, offset) => offset + 2);
+  const numericColumns = Array.from(
+    { length: exam.pcMap.length + pcTypes.length + 1 },
+    (_, offset) => offset + 2,
+  );
   const averageRow: (string | number)[] = ["", "ORTALAMA"];
   numericColumns.forEach((columnIndex) => {
-    averageRow[columnIndex] = average(rows.map((row) => Number(row[columnIndex] ?? 0)));
+    averageRow[columnIndex] = average(
+      rows.map((row) => Number(row[columnIndex] ?? 0)),
+    );
   });
 
   const sheetData = [
@@ -114,13 +168,21 @@ export function exportExamWorkbook(exam: ExamState) {
 
   const worksheet = XLSX.utils.aoa_to_sheet(sheetData);
   worksheet["!cols"] = [
-    { wch: 16 }, { wch: 28 },
-    ...Array.from({ length: 11 }, () => ({ wch: 12 })),
+    { wch: 16 },
+    { wch: 28 },
+    ...numericColumns.map(() => ({ wch: 12 })),
   ];
-  worksheet["!autofilter"] = { ref: `A5:M${Math.max(5, 5 + rows.length)}` };
+  worksheet["!autofilter"] = {
+    ref: `A5:${XLSX.utils.encode_col(headers.length - 1)}${Math.max(5, 5 + rows.length)}`,
+  };
 
   const workbook = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(workbook, worksheet, "Sonuçlar");
+  return workbook;
+}
+
+export function exportExamWorkbook(exam: ExamState) {
+  const workbook = createExamWorkbook(exam);
   const filename = `${safeFilename(exam.courseCode)}_${safeFilename(exam.courseName)}.xlsx`;
   XLSX.writeFile(workbook, filename);
 }

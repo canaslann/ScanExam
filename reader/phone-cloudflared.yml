@@ -1,0 +1,2 @@
+# An explicit empty config prevents loading an unrelated user-level named tunnel.
+{}

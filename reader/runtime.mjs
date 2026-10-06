@@ -12,7 +12,7 @@ const runtimeRoot = join(projectRoot, "work", "reader");
 const version = "v0.35.0";
 const archiveName = "ollama-windows-amd64.zip";
 const archiveDigest = "d6f7d3dd4f5d013553a78c1e78b2521fcf41d43dd2863e4596cdc046fe6036db";
-export const readerModel = process.env.SCANEXAM_MODEL || "qwen3.5:4b";
+export const readerModel = process.env.SCANEXAM_MODEL || "glm-ocr-eot:q8_0";
 if (/cloud/i.test(readerModel)) throw new Error("Yalnızca yerel modeller kullanılabilir.");
 const configuredUrl = new URL(process.env.SCANEXAM_READER_URL || "http://127.0.0.1:11435");
 if (configuredUrl.protocol !== "http:" || !["127.0.0.1", "localhost", "[::1]"].includes(configuredUrl.hostname) || configuredUrl.username || configuredUrl.password) {
@@ -102,11 +102,15 @@ export async function startReader() {
   throw new Error("Yerel motor başlamadı. work/reader/service.log dosyasını kontrol edin.");
 }
 
-export async function pullModel() {
-  console.log(`${readerModel} indiriliyor. Sınav fotoğrafları hiçbir haricî servise gönderilmez.`);
+export async function pullModel(selectedModel = readerModel) {
+  if (selectedModel === "glm-ocr-eot:q8_0") {
+    const { installGlmEot } = await import("./glm-install.mjs");
+    return installGlmEot({ projectRoot, readerUrl, pullSource: () => pullModel("glm-ocr:q8_0") });
+  }
+  console.log(`${selectedModel} indiriliyor. Sınav fotoğrafları hiçbir haricî servise gönderilmez.`);
   const response = await fetch(`${readerUrl}/api/pull`, {
     method: "POST", headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ model: readerModel, stream: true }),
+    body: JSON.stringify({ model: selectedModel, stream: true }),
   });
   if (!response.ok || !response.body) throw new Error(`Model indirilemedi: HTTP ${response.status}`);
   let buffer = "";
