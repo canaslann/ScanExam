@@ -32,6 +32,7 @@ export type ScanDraft = {
   engine?: "local-vision" | "tesseract";
   checkMode?: "single" | "double";
   elapsedMs?: number;
+  readingStrategy?: "regions" | "compact-table" | "full-table" | "mixed";
 };
 
 export type ScanOutput = ScanDraft & {

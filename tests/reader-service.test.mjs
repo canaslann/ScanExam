@@ -12,12 +12,16 @@ test("service handles readiness, failures, double control and isolation", async 
   const savedFetch = globalThis.fetch;
   const savedUrl = process.env.SCANEXAM_READER_URL;
   const savedModel = process.env.SCANEXAM_MODEL;
+  const savedRegions = process.env.SCANEXAM_REGION_READING;
+  const savedFast = process.env.SCANEXAM_FAST_READING;
   process.env.SCANEXAM_READER_URL = "http://127.0.0.1:11435";
   process.env.SCANEXAM_MODEL = "test-local";
   t.after(() => {
     globalThis.fetch = savedFetch;
     if (savedUrl === undefined) delete process.env.SCANEXAM_READER_URL; else process.env.SCANEXAM_READER_URL = savedUrl;
     if (savedModel === undefined) delete process.env.SCANEXAM_MODEL; else process.env.SCANEXAM_MODEL = savedModel;
+    if (savedRegions === undefined) delete process.env.SCANEXAM_REGION_READING; else process.env.SCANEXAM_REGION_READING = savedRegions;
+    if (savedFast === undefined) delete process.env.SCANEXAM_FAST_READING; else process.env.SCANEXAM_FAST_READING = savedFast;
   });
 
   await t.test("status does not load a model or upload images", async () => {
@@ -102,5 +106,153 @@ test("service handles readiness, failures, double control and isolation", async 
     assert.match(status.message, /yerel modeller/);
     await assert.rejects(readLocalPaper("local-image", "single", signal()));
     process.env.SCANEXAM_MODEL = "test-local";
+  });
+  const regionImages = { student: "student-image", course: "course-image", scores: "scores-image" };
+  const regionReply = (image, data = raw) => {
+    const fields = image === "student-image" ? ["fullName", "studentNumber", "uncertainFields"]
+      : image === "course-image" ? ["courseCode", "courseName", "uncertainFields"] : ["scores", "writtenTotal", "pcMap", "uncertainFields"];
+    return completed(Object.fromEntries(fields.map((key) => [key, data[key]])));
+  };
+  process.env.SCANEXAM_MODEL = "qwen3.5:4b";
+  process.env.SCANEXAM_REGION_READING = "on";
+  await t.test("regional single reads exactly three independent images with smaller schemas", async () => {
+    const requests = [];
+    globalThis.fetch = async (_url, options) => {
+      const body = JSON.parse(options.body); requests.push(body);
+      assert.equal(body.model, "qwen3.5:4b");
+      assert.equal(body.think, false);
+      assert.equal(body.messages.length, 1);
+      assert.equal(body.messages[0].content.includes(raw.studentNumber), false);
+      return regionReply(body.messages[0].images[0]);
+    };
+    const result = await readLocalPaper("full-image", "single", signal(), regionImages);
+    assert.equal(result.readingStrategy, "regions");
+    assert.deepEqual(requests.map((body) => body.messages[0].images[0]), ["scores-image", "student-image", "course-image"]);
+    assert.deepEqual(requests[1].format.required, ["fullName", "studentNumber", "uncertainFields"]);
+    assert.equal(result.studentNumber, raw.studentNumber);
+  });
+  await t.test("numeric uncertainty/mismatch stops early and uses original full-table prompt; total is never repaired", async () => {
+    for (const changed of [{ ...raw, writtenTotal: "57" }, { ...raw, uncertainFields: ["s4"] }, { ...raw, uncertainFields: ["pcMap"] }, { ...raw, writtenTotal: "" }]) {
+      const requests = [];
+      globalThis.fetch = async (_url, options) => {
+        const body = JSON.parse(options.body), image = body.messages[0].images[0]; requests.push(image);
+        if (image === "full-image") {
+          assert.deepEqual(body.format.required, ["fullName", "studentNumber", "courseCode", "courseName", "scores", "writtenTotal", "pcMap", "uncertainFields"]);
+          assert.equal(body.messages[0].content.includes("57"), false);
+          assert.equal(body.messages[0].content.includes(raw.studentNumber), false);
+        }
+        return image === "full-image" ? completed({ ...raw, writtenTotal: "78" }) : regionReply(image, changed);
+      };
+      const result = await readLocalPaper("full-image", "single", signal(), regionImages);
+      assert.equal(result.readingStrategy, "full-table");
+      assert.equal(result.writtenTotal, "78"); // NOT the calculated 80 or the region's 57.
+      assert.deepEqual(result.scores, raw.scores);
+      assert.deepEqual(requests, ["scores-image", "full-image"]);
+      assert.match(result.warnings.at(-1), /aritmetik ile düzeltilmedi/);
+      if (changed.writtenTotal === "57") assert.deepEqual(result.alternatives.writtenTotal, ["78", "57"]);
+    }
+  });
+  await t.test("a failed full-table fallback is not retried inside the same reading", async () => {
+    const requests = [];
+    globalThis.fetch = async (_url, options) => {
+      const image = JSON.parse(options.body).messages[0].images[0]; requests.push(image);
+      return image === "full-image" ? reply({ error: "failed" }, 500) : regionReply(image, { ...raw, writtenTotal: "57" });
+    };
+    await assert.rejects(readLocalPaper("full-image", "single", signal(), regionImages), (error) => error.status === 502);
+    assert.deepEqual(requests, ["scores-image", "full-image"]);
+  });
+  await t.test("truncated region falls back without retaining partial predictions", async () => {
+    const requests = [];
+    globalThis.fetch = async (_url, options) => {
+      const image = JSON.parse(options.body).messages[0].images[0]; requests.push(image);
+      return image === "full-image" ? completed() : reply({ done: true, done_reason: "length", message: { content: "{}" } });
+    };
+    const result = await readLocalPaper("full-image", "single", signal(), regionImages);
+    assert.deepEqual(requests, ["scores-image", "full-image"]);
+    assert.equal(result.fullName, raw.fullName);
+  });
+  await t.test("region disable switch uses legacy full-table path", async () => {
+    process.env.SCANEXAM_REGION_READING = "off";
+    globalThis.fetch = async (_url, options) => {
+      assert.deepEqual(JSON.parse(options.body).messages[0].images, ["full-image"]);
+      return completed();
+    };
+    assert.equal((await readLocalPaper("full-image", "single", signal(), regionImages)).readingStrategy, "full-table");
+    process.env.SCANEXAM_REGION_READING = "on";
+  });
+  await t.test("regional double has six fresh requests and preserves disagreements", async () => {
+    let count = 0;
+    globalThis.fetch = async (_url, options) => {
+      const body = JSON.parse(options.body), image = body.messages[0].images[0]; count++;
+      assert.equal(body.messages[0].content.includes(raw.studentNumber), false);
+      assert.equal(body.messages[0].content.startsWith("Make a fresh"), count > 3);
+      return regionReply(image, count > 3 ? { ...raw, fullName: "Başka Öğrenci" } : raw);
+    };
+    const result = await readLocalPaper("full-image", "double", signal(), regionImages);
+    assert.equal(count, 6);
+    assert.equal(result.fullName, raw.fullName);
+    assert.deepEqual(result.alternatives.fullName, [raw.fullName, "Başka Öğrenci"]);
+    assert.equal(result.readingStrategy, "regions");
+  });
+  await t.test("cancellation does not trigger a fallback request and releases busy guard", async () => {
+    const controller = new AbortController(); let calls = 0;
+    globalThis.fetch = async () => { calls++; controller.abort(); throw new Error("aborted"); };
+    await assert.rejects(readLocalPaper("full-image", "single", controller.signal, regionImages), (error) => error.status === 504);
+    assert.equal(calls, 1);
+    globalThis.fetch = async (_url, options) => regionReply(JSON.parse(options.body).messages[0].images[0]);
+    assert.equal((await readLocalPaper("full-image", "single", signal(), regionImages)).writtenTotal, "80");
+  });
+  delete process.env.SCANEXAM_REGION_READING;
+  delete process.env.SCANEXAM_FAST_READING;
+  await t.test("automatic CPU path preserves original full schema/prompt on compact complete table", async () => {
+    const requests = [];
+    globalThis.fetch = async (url, options) => {
+      requests.push(url);
+      if (url.endsWith("/api/ps")) return reply({ models: [{ name: "qwen3.5:4b", size_vram: 0 }] });
+      const body = JSON.parse(options.body);
+      assert.deepEqual(body.messages[0].images, ["compact-image"]);
+      assert.equal(body.format.required.length, 8);
+      return completed();
+    };
+    const result = await readLocalPaper("full-image", "single", signal(), regionImages, "compact-image");
+    assert.equal(result.readingStrategy, "compact-table");
+    assert.equal(requests.length, 2);
+  });
+  await t.test("cold automatic GPU path loads without sending any image/answer then uses regions", async () => {
+    let inspections = 0; const images = [];
+    globalThis.fetch = async (url, options) => {
+      if (url.endsWith("/api/ps")) return reply({ models: ++inspections === 1 ? [] : [{ name: "qwen3.5:4b", size_vram: 123456 }] });
+      const body = JSON.parse(options.body);
+      if (url.endsWith("/api/generate")) {
+        assert.equal(body.images, undefined); assert.equal(body.prompt, undefined); assert.equal(body.model, "qwen3.5:4b");
+        return reply({ done: true });
+      }
+      const image = body.messages[0].images[0]; images.push(image);
+      return regionReply(image);
+    };
+    const result = await readLocalPaper("full-image", "single", signal(), regionImages, "compact-image");
+    assert.equal(result.readingStrategy, "regions");
+    assert.equal(inspections, 2);
+    assert.deepEqual(images, ["scores-image", "student-image", "course-image"]);
+  });
+  await t.test("unknown offload or disabled optimization retains original image", async () => {
+    for (const disabled of [false, true]) {
+      if (disabled) process.env.SCANEXAM_FAST_READING = "off";
+      let inspections = 0;
+      globalThis.fetch = async (url, options) => {
+        if (url.endsWith("/api/ps")) { inspections++; return reply({ models: [{ name: "qwen3.5:4b", size_vram: "unknown" }] }); }
+        assert.deepEqual(JSON.parse(options.body).messages[0].images, ["full-image"]);
+        return completed();
+      };
+      assert.equal((await readLocalPaper("full-image", "single", signal(), regionImages, "compact-image")).readingStrategy, "full-table");
+      assert.equal(inspections, disabled ? 0 : 1);
+    }
+    delete process.env.SCANEXAM_FAST_READING;
+  });
+  await t.test("abort while detecting backend never submits an image or retries", async () => {
+    const controller = new AbortController(); let requests = 0;
+    globalThis.fetch = async () => { requests++; controller.abort(); throw new Error("abort"); };
+    await assert.rejects(readLocalPaper("full-image", "single", controller.signal, regionImages, "compact-image"), (error) => error.status === 504);
+    assert.equal(requests, 1);
   });
 });

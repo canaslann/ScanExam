@@ -31,8 +31,8 @@ export async function POST(request: Request) {
     let body: unknown;
     try { body = JSON.parse(new TextDecoder().decode(bytes)); }
     catch { throw new ReaderError("Geçersiz tarama isteği.", 400); }
-    const { image, checkMode } = validateReaderInput(body);
-    return Response.json(await readLocalPaper(image, checkMode, request.signal), { headers });
+    const { image, checkMode, regions, compactImage } = validateReaderInput(body);
+    return Response.json(await readLocalPaper(image, checkMode, request.signal, regions, compactImage), { headers });
   } catch (error) {
     return Response.json({ error: error instanceof ReaderError ? error.message : "Okuma sırasında beklenmeyen bir hata oluştu." },
       { status: error instanceof ReaderError ? error.status : 500, headers });

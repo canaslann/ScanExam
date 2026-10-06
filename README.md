@@ -5,7 +5,7 @@ Sabit sınav şablonunun üst bölümündeki ders, öğrenci ve puan bilgilerini
 ## Özellikler
 
 - Telefonun arka kamerası veya galeriden fotoğraf seçimi
-- Üst tablonun doğal görüntüsü korunarak yerel Qwen3.5-4B ile basılı metin ve el yazısı okuma
+- Yerel Qwen3.5-4B ile, CPU/GPU kullanımına uygun okuma akışıyla basılı metin ve el yazısı okuma
 - Tek okuma veya iki ayrı okuma isteğinin sonuçlarını karşılaştıran çift kontrol
 - Ders kodu/adı ve Soru–PÇ eşleşmelerini ilk kâğıttan okuma
 - Öğretmen doğrulama formu, farklı okuma alternatifleri ve toplam not kontrolü
@@ -49,6 +49,18 @@ Bu yapı, modelin çalıştığı bilgisayarda bir Node.js sunucusu gerektirir; 
 - Uygulama otomatik öğrenci kaydı yapmaz; öğretmen onayı gerekir. Kayıtlar ve Excel dışa aktarma tarayıcıda kalır; fotoğraflar sunucuda dosyaya kaydedilmez.
 
 Önceki Tesseract okuyucusu karşılaştırma amacıyla `lib/tesseract-reader.ts` içinde korunur; varsayılan tarama akışında kullanılmaz.
+
+## 4B hızlandırma
+
+Model, quantization ve 1600 piksel genişlik değişmez. Sabit şablonun çizgileri otomatik doğrulanır; bilinmeyen, eksik veya fazla eğik tabloda özgün üst tablo akışı korunur. Motorun `/api/ps` yanıtından gerçek GPU bellek kullanımı okunur. Model henüz yüklenmemişse görüntü/istem göndermeyen yerel bir yükleme isteği yapılır; bu süre mevcut 120/240 saniyelik toplam son tarihe dahildir. Aygıt kullanımı doğrulanamazsa özgün akış kullanılır.
+
+- CPU: yalnız Not satırının altındaki boş alan kırpılır. Tüm tablo, bağlam, çizgiler ve özgün tam tablo istemi korunur.
+- GPU kullanılıyorsa: puan tablosu, öğrenci bağlamını koruyan üst form ve ders hücresi ayrı okunur. Puan bölgesi eksik/belirsiz/tutarsızsa diğer bölgeleri okumadan özgün tam tablo yöntemiyle yeniden okunur. Çelişkiler öğretmene alternatif olarak gösterilir; aritmetikle değer düzeltilmez.
+- Tek/çift kontrol, iptal, yerel veri işleme ve öğretmen onayı korunur. Fazladan görüntüler boyut sınırını aşıyorsa yalnız özgün görüntü gönderilir.
+
+`SCANEXAM_FAST_READING=off` otomatik akış seçimini kapatır. `SCANEXAM_REGION_READING=on` bölgesel deneyi zorlar, `off` özgün tam tabloyu zorlar; normal kullanımda bu değişkeni tanımlamayın. `SCANEXAM_READER_THREADS` isteğe bağlı 1–64 iş parçacığı sınırıdır; varsayılan motorun otomatik seçimidir. GPU sistemde kapatılmaz.
+
+Ders kodu ile başlık aynı hücredeki ayırıcı tireyle birleşebildiğinden yalnız alan sınırındaki ayırıcı temizlenir; kodun iç tireleri ve el yazısı değişmez. Dört kâğıtla yapılan hız/doğruluk ölçümleri genel doğruluk veya bütün ofis bilgisayarları için donanım garantisi değildir. Deneyin yöntemi `reader/benchmark/README.md`, yerel sonuçları `work/benchmark/optimization-2026-10-06.md` içindedir.
 
 ## Testler
 

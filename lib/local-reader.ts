@@ -1,5 +1,6 @@
-import { compareReadings, normalizePaper, PAPER_SCHEMA, TRANSCRIBE_PROMPT, type CheckMode } from "./reader-contract.ts";
+import { compareReadings, mergeRegionReadings, normalizePaper, PAPER_SCHEMA, regionContract, TRANSCRIBE_PROMPT, type CheckMode } from "./reader-contract.ts";
 import type { ScanOutput } from "./exam";
+import { REGION_KEYS, type PaperRegions, type RegionKey } from "./paper-regions.ts";
 
 const model = () => {
   const selected = process.env.SCANEXAM_MODEL || "qwen3.5:4b";
@@ -35,25 +36,49 @@ export async function getReaderStatus() {
   }
 }
 
-export function validateReaderInput(input: unknown): { image: string; checkMode: CheckMode } {
+export function validateReaderInput(input: unknown): { image: string; checkMode: CheckMode; regions?: PaperRegions; compactImage?: string } {
   if (!input || typeof input !== "object" || Array.isArray(input)) throw new ReaderError("Geçerli bir görüntü gönderilmeli.", 400);
-  const { image, checkMode = "single" } = input as Record<string, unknown>;
-  if (typeof image !== "string" || image.length > 8_000_000 || !/^data:image\/jpeg;base64,\/[9]j\/[A-Za-z0-9+/=]+$/.test(image)) {
-    throw new ReaderError("Görüntü geçerli bir JPEG olmalı ve 6 MB sınırını aşmamalı.", 400);
-  }
+  const { image, checkMode = "single", regions, compactImage } = input as Record<string, unknown>;
+  const jpeg = (value: unknown): value is string => typeof value === "string" && value.length <= 8_000_000
+    && /^data:image\/jpeg;base64,\/[9]j\/[A-Za-z0-9+/=]+$/.test(value);
+  if (!jpeg(image)) throw new ReaderError("Görüntü geçerli bir JPEG olmalı ve 6 MB sınırını aşmamalı.", 400);
   if (checkMode !== "single" && checkMode !== "double") throw new ReaderError("Kontrol modu geçersiz.", 400);
-  return { image: image.slice(image.indexOf(",") + 1), checkMode };
+  const result: { image: string; checkMode: CheckMode; regions?: PaperRegions; compactImage?: string } = { image: image.slice(image.indexOf(",") + 1), checkMode };
+  let size = image.length;
+  if (compactImage !== undefined) {
+    if (!jpeg(compactImage)) throw new ReaderError("Kırpılmış tablo geçerli bir JPEG olmalı.", 400);
+    size += compactImage.length;
+    if (size > 8_000_000) throw new ReaderError("Görüntülerin toplam boyutu sınırı aşıldı.", 413);
+    result.compactImage = compactImage.slice(compactImage.indexOf(",") + 1);
+  }
+  if (regions !== undefined) {
+    if (!regions || typeof regions !== "object" || Array.isArray(regions)
+      || Object.keys(regions).length !== 3) throw new ReaderError("Bölge görüntüleri geçersiz.", 400);
+    const supplied = regions as Record<string, unknown>;
+    const decoded = {} as PaperRegions;
+    for (const name of REGION_KEYS) {
+      const value = supplied[name];
+      if (!jpeg(value)) throw new ReaderError("Bölgeler yerel JPEG görüntüleri olmalı.", 400);
+      size += value.length;
+      if (size > 8_000_000) throw new ReaderError("Görüntülerin toplam boyutu sınırı aşıldı.", 413);
+      decoded[name] = value.slice(value.indexOf(",") + 1);
+    }
+    result.regions = decoded;
+  }
+  return result;
 }
 
-async function transcribe(image: string, signal: AbortSignal, verify = false): Promise<ScanOutput> {
+async function requestTranscription(image: string, signal: AbortSignal, schema: object, prompt: string, verify = false): Promise<unknown> {
   let response: Response;
   try {
     response = await fetch(`${serviceUrl()}/api/chat`, {
       method: "POST", headers: { "Content-Type": "application/json" }, signal,
-      body: JSON.stringify({ model: model(), stream: false, think: false, keep_alive: "10m", format: PAPER_SCHEMA,
-        options: { temperature: 0, num_ctx: 4096, num_predict: 600 },
+      body: JSON.stringify({ model: model(), stream: false, think: false, keep_alive: "10m", format: schema,
+        options: { temperature: 0, num_ctx: 4096, num_predict: 600,
+          ...(process.env.SCANEXAM_READER_THREADS && /^\d+$/.test(process.env.SCANEXAM_READER_THREADS)
+            ? { num_thread: Math.max(1, Math.min(64, Number(process.env.SCANEXAM_READER_THREADS))) } : {}) },
         messages: [{ role: "user", content: (verify ? "Make a fresh careful visual transcription. Pay special attention to ambiguous handwritten digits, leading zeroes, Turkish letters and the distinction between Puan and Not. " : "")
-          + TRANSCRIBE_PROMPT + JSON.stringify(PAPER_SCHEMA), images: [image] }] }),
+          + prompt, images: [image] }] }),
     });
   } catch {
     if (signal.aborted) throw new ReaderError("Okuma iptal edildi veya süre sınırına ulaştı. Daha net bir fotoğrafla tekrar deneyin.", 504);
@@ -65,21 +90,103 @@ async function transcribe(image: string, signal: AbortSignal, verify = false): P
   }
   const result = await response.json() as { message?: { content?: string }; done?: boolean; done_reason?: string };
   if (!result.done || !result.message?.content || result.done_reason === "length") throw new ReaderError("Okuma tamamlanamadı; hiçbir tahmin kaydedilmedi.", 502);
-  try { return normalizePaper(JSON.parse(result.message.content)); }
+  try { return JSON.parse(result.message.content); }
   catch { throw new ReaderError("Okuyucu geçerli bir tablo döndürmedi; fotoğrafı tekrar çekin veya elle giriş yapın.", 502); }
 }
 
+async function transcribe(image: string, signal: AbortSignal, verify = false): Promise<ScanOutput> {
+  try { return { ...normalizePaper(await requestTranscription(image, signal, PAPER_SCHEMA, TRANSCRIBE_PROMPT + JSON.stringify(PAPER_SCHEMA), verify)), readingStrategy: "full-table" }; }
+  catch (error) { if (error instanceof ReaderError) throw error; throw new ReaderError("Okuyucu geçerli bir tablo döndürmedi; fotoğrafı tekrar çekin veya elle giriş yapın.", 502); }
+}
+
+async function transcribeRegions(regions: PaperRegions, signal: AbortSignal, verify = false): Promise<{ output: ScanOutput; parts: Record<RegionKey, unknown> }> {
+  const parts = {} as Record<RegionKey, unknown>;
+  for (const name of ["scores", "student", "course"] as const) {
+    const { schema, prompt } = regionContract(name);
+    parts[name] = await requestTranscription(regions[name], signal, schema, prompt, verify);
+    if (name === "scores") {
+      const numericOnly = mergeRegionReadings({ student: { fullName: "", studentNumber: "", uncertainFields: [] },
+        course: { courseCode: "", courseName: "", uncertainFields: [] }, scores: parts.scores });
+      if (numericOnly.reviewFields?.some((field) => /^s[1-5]$/.test(field) || field === "writtenTotal" || field === "pcMap")) {
+        // Stop before doing the other two regions: reserve time for the original
+        // full-table prompt within the existing shared 120/240 second deadline.
+        return { output: numericOnly, parts };
+      }
+    }
+  }
+  try { return { output: { ...mergeRegionReadings(parts), readingStrategy: "regions" }, parts }; }
+  catch { throw new ReaderError("Bölgesel okuma eksik veya geçersiz.", 502); }
+}
+
 let busy = false;
-export async function readLocalPaper(image: string, checkMode: CheckMode, signal: AbortSignal): Promise<ScanOutput> {
+async function loadedBackend(signal: AbortSignal): Promise<"cpu" | "gpu" | "unknown"> {
+  const inspect = async () => {
+    const response = await fetch(`${serviceUrl()}/api/ps`, { signal: AbortSignal.any([signal, AbortSignal.timeout(3000)]) });
+    if (!response.ok) return undefined;
+    const data = await response.json() as { models?: { name: string; size_vram?: number }[] };
+    return data.models?.find((item) => item.name === model());
+  };
+  try {
+    let loaded = await inspect();
+    if (!loaded) {
+      // An empty-prompt load only warms the selected local model; no image,
+      // expected answer or generated transcription is involved.
+      const response = await fetch(`${serviceUrl()}/api/generate`, { method: "POST", signal,
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ model: model(), stream: false, keep_alive: "10m", options: { num_ctx: 4096 } }) });
+      if (!response.ok) return "unknown";
+      const result = await response.json() as { done?: boolean };
+      if (!result.done) return "unknown";
+      loaded = await inspect();
+    }
+    if (!loaded || typeof loaded.size_vram !== "number" || !Number.isFinite(loaded.size_vram) || loaded.size_vram < 0) return "unknown";
+    return loaded.size_vram > 0 ? "gpu" : "cpu";
+  } catch {
+    if (signal.aborted) throw new ReaderError("Okuma iptal edildi veya süre sınırına ulaştı.", 504);
+    return "unknown"; // Missing backend evidence keeps the legacy full-table path.
+  }
+}
+
+export async function readLocalPaper(image: string, checkMode: CheckMode, signal: AbortSignal, regions?: PaperRegions, compactImage?: string): Promise<ScanOutput> {
   if (busy) throw new ReaderError("Başka bir kâğıt okunuyor. Tamamlanınca yeniden deneyin.", 409);
   busy = true;
   const started = Date.now();
   try {
     const bounded = AbortSignal.any([signal, AbortSignal.timeout(checkMode === "double" ? 240_000 : 120_000)]);
-    const first = await transcribe(image, bounded);
+    const automatic = regions && compactImage && model() === "qwen3.5:4b"
+      && process.env.SCANEXAM_FAST_READING !== "off" && process.env.SCANEXAM_REGION_READING === undefined;
+    const backend = automatic ? await loadedBackend(bounded) : "unknown";
+    const read = async (verify = false): Promise<ScanOutput> => {
+      if (automatic && backend === "cpu") return { ...await transcribe(compactImage!, bounded, verify), readingStrategy: "compact-table" };
+      if (!regions || model() !== "qwen3.5:4b" || !(automatic && backend === "gpu" || process.env.SCANEXAM_REGION_READING === "on")) return transcribe(image, bounded, verify);
+      let fallbackStarted = false;
+      try {
+        const { output: regional, parts } = await transcribeRegions(regions, bounded, verify);
+        if (regional.reviewFields?.some((field) => /^s[1-5]$/.test(field) || field === "writtenTotal" || field === "pcMap")) {
+          fallbackStarted = true;
+          const full = await transcribe(image, bounded, verify);
+          const previousNumbers = mergeRegionReadings({ student: { fullName: full.fullName, studentNumber: full.studentNumber, uncertainFields: [] },
+            course: { courseCode: full.courseCode || "", courseName: full.courseName || "", uncertainFields: [] }, scores: parts.scores });
+          const comparison = compareReadings(full, previousNumbers);
+          return { ...comparison, checkMode: "single", readingStrategy: "full-table",
+            warnings: [...new Set([...(full.warnings || []),
+              "Sayısal bölge eksik, belirsiz veya tutarsızdı; özgün tam tablo istemiyle yeniden okundu. Farklı değerler alternatif olarak gösterildi; değerler aritmetik ile düzeltilmedi."])] };
+        }
+        return regional;
+      }
+      catch (error) {
+        if (fallbackStarted || bounded.aborted || error instanceof ReaderError && error.status === 503) throw error;
+        const full = await transcribe(image, bounded, verify);
+        return { ...full, warnings: [...(full.warnings || []), "Bölgesel okuma tamamlanamadı; üst tablo bütünüyle yeniden okundu. Değerler aritmetik ile düzeltilmedi."] };
+      }
+    };
+    const first = await read();
     let result: ScanOutput = { ...first, checkMode };
     if (checkMode === "double") {
-      try { result = compareReadings(first, await transcribe(image, bounded, true)); }
+      try {
+        const second = await read(true);
+        result = { ...compareReadings(first, second), readingStrategy: first.readingStrategy === second.readingStrategy ? first.readingStrategy : "mixed" };
+      }
       catch (error) {
         if (signal.aborted) throw error;
         result = { ...first, checkMode: "single", reviewFields: [...new Set([...(first.reviewFields || []), "fullName", "studentNumber", "s1", "s2", "s3", "s4", "s5", "writtenTotal"])],

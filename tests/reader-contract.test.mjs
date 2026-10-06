@@ -14,6 +14,15 @@ test("leading zeroes, Turkish letters and repeated PÇ mappings are preserved", 
   assert.equal(result.fullName, "Örnek Öğrenci");
   assert.deepEqual(result.pcMap, ["PÇ2", "PÇ1", "PÇ3", "PÇ2", "PÇ4"]);
 });
+test("course-cell separator is removed at field boundaries, not from internal codes or handwriting", () => {
+  const result = normalizePaper(sample({ courseCode: "DERS101-2026-", courseName: "- ÖRNEK DERS", fullName: "Ayşe Nur-Kaya" }));
+  assert.equal(result.courseCode, "DERS101-2026");
+  assert.equal(result.courseName, "ÖRNEK DERS");
+  assert.equal(result.fullName, "Ayşe Nur-Kaya");
+  const literal = normalizePaper(sample({ courseCode: "DERS-X", courseName: "-1 ve Sayılar" }));
+  assert.equal(literal.courseCode, "DERS-X");
+  assert.equal(literal.courseName, "-1 ve Sayılar");
+});
 test("a 78/80 mismatch never repairs a handwritten score or written total", () => {
   const result = normalizePaper(sample());
   assert.equal(result.scores[3], "17");

@@ -1,0 +1,25 @@
+{
+  "description": "Bağımsız olarak etiketlenmiş yerel OCR test seti",
+  "annotationStatus": "review-required",
+  "cases": [
+    {
+      "id": "paper-1",
+      "source": "C:/path/to/exam.jpg",
+      "expected": {
+        "fullName": "Örnek Öğrenci",
+        "studentNumber": "00012345678",
+        "courseCode": "BILM374-2022",
+        "courseName": "YAPAY ZEKA",
+        "scores": ["14", "17", "19", "13", "15"],
+        "writtenTotal": "76",
+        "pcMap": ["PÇ2", "PÇ1", "PÇ3", "PÇ2", "PÇ4"]
+      },
+      "excludedFields": [],
+      "regions": {
+        "student": [0.60, 0.11, 0.25, 0.05],
+        "course": [0.19, 0.14, 0.31, 0.02],
+        "scores": [0.04, 0.25, 0.61, 0.07]
+      }
+    }
+  ]
+}
