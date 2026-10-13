@@ -1,7 +1,7 @@
 "use client";
 /* eslint-disable @next/next/no-img-element -- Source photos are fetched from the local computer, never an image optimizer. */
 import { useEffect, useRef, useState } from "react";
-import { AlertTriangle, CheckCircle2, FileSpreadsheet, LoaderCircle, PencilLine, ScanLine, Trash2, Upload } from "lucide-react";
+import { AlertTriangle, CheckCircle2, FileSpreadsheet, LoaderCircle, PencilLine, ScanLine, Trash2, Upload, ZoomIn, ZoomOut } from "lucide-react";
 import { Toaster, toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -12,7 +12,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { LiveCamera } from "@/components/live-camera";
 import { exportExamWorkbook, MAX_QUESTIONS, validPcCode, validQuestionCount, type PcCode } from "@/lib/exam";
 import { sumScores, type CheckMode } from "@/lib/reader-contract";
-import { cellKeys, cellState, cellValue, editCell, exportIssues, MAX_PENDING, metadataSignature, metadataWarnings, rowSignature, sessionExam, type CellKey, type ScanRow, type ScanSession } from "@/lib/scan-session";
+import { approvalIssue, cellKeys, cellState, cellValue, editCell, exportIssues, MAX_PENDING, metadataSignature, metadataWarnings, rowSignature, sessionExam, type CellKey, type ScanRow, type ScanSession } from "@/lib/scan-session";
 import { sharedPhoto } from "@/lib/shared-client";
 import { useSharedScan } from "@/hooks/use-shared-scan";
 
@@ -31,6 +31,8 @@ export function ExamApp() {
   const { session, sessionRef, ready, error: storageError, paused, uploads, writing, updateRow, updateMeta } = sync;
   const [mode, setMode] = useState<CheckMode>("single"), [status, setStatus] = useState<ReaderStatus | null>(null);
   const [selected, setSelected] = useState<string | null>(null), [photo, setPhoto] = useState<{ id: string; url: string } | null>(null);
+  const [zoomedPhoto, setZoomedPhoto] = useState<string | null>(null);
+  const photoZoom = selected !== null && zoomedPhoto === selected;
   const photoUrl = photo?.id === selected ? photo.url : null;
   const gallery = useRef<HTMLInputElement>(null), replacement = useRef<string | null>(null);
   useEffect(() => {
@@ -55,6 +57,34 @@ export function ExamApp() {
   const issues = exportIssues(session), selectedRow = session.rows.find(row => row.id === selected);
   const editable = sync.connected, usable = editable;
   const completed = session.rows.filter(row => row.status === "done").length;
+  const approvalProblem = selectedRow ? approvalIssue(session, selectedRow) : undefined;
+  const metadataReview = selectedRow && selectedRow.metadataApproval !== metadataSignature(session, selectedRow)
+    ? metadataWarnings(session, selectedRow) : [];
+  const readingDetails = [...new Set(selectedRow?.draft.warnings || [])];
+  const scoreSum = selectedRow ? sumScores(selectedRow.draft.scores) : null;
+  const totalMismatch = selectedRow && scoreSum !== null && !approvalProblem &&
+    cellState(session, selectedRow, "writtenTotal").color === "yellow" &&
+    Number(selectedRow.draft.writtenTotal.replace(",", ".")) !== scoreSum;
+  function reviewField(key: CellKey) {
+    if (!selectedRow) return null;
+    const question = /^s\d+$/.test(key);
+    return (
+      <div key={key} className="min-w-0 space-y-1.5">
+        <Label htmlFor={`review-${selectedRow.id}-${key}`} className="text-xs text-slate-600">
+          {key === "fullName" ? "Ad soyad" : key === "studentNumber" ? "Öğrenci no" : key === "writtenTotal" ? "Kâğıtta yazan toplam" : key.toUpperCase()}
+          {question && <span className="ml-1 text-[10px] text-slate-400">{session.pcMap[Number(key.slice(1)) - 1]}</span>}
+        </Label>
+        <EditableCell compact session={session} row={selectedRow} field={key} disabled={!editable}
+          onEdit={value => void updateRow(selectedRow.id, row => editCell(row, key, value)).catch(() => undefined)} />
+        {!!selectedRow.draft.alternatives?.[key]?.length && (
+          <details className="text-xs text-amber-800">
+            <summary className="cursor-pointer">Alternatifler</summary>
+            <p className="mt-1 break-words">{selectedRow.draft.alternatives[key].join(" / ")}</p>
+          </details>
+        )}
+      </div>
+    );
+  }
   async function capture(blob: Blob, replacementId?: string) {
     if (!usable) throw new Error("Bilgisayar bağlantısı hazır değil; görüntü korunmalı.");
     if (pending >= MAX_PENDING) throw new Error("Kuyruk dolu; aktarımların/okumaların tamamlanmasını bekleyin.");
@@ -62,13 +92,17 @@ export function ExamApp() {
   }
   function approve(row: ScanRow) {
     void sync.command({ action: "approve", id: row.id, signature: rowSignature(row, sessionRef.current) })
-      .then(() => toast.success("Satır kontrol edildi; puan/toplam değiştirilmedi."))
+      .then(() => {
+        setSelected(current => current === row.id ? null : current);
+        toast.success("Satır kontrol edildi; puan/toplam değiştirilmedi.");
+      })
       .catch(cause => toast.error(cause instanceof Error ? cause.message : "Kontrol tamamlanamadı."));
   }
   async function remove(row: ScanRow) {
-    if (row.status === "reading" || !window.confirm("Bu satır ve bilgisayarda saklanan kaynak görüntüsü tüm cihazların ortak tablosundan silinsin mi?")) return;
-    await sync.command({ action: "remove", id: row.id, signature: rowSignature(row, sessionRef.current) }).catch(() => undefined);
-    if (selected === row.id) setSelected(null);
+    if (row.status === "reading") return;
+    await sync.command({ action: "remove", id: row.id, signature: rowSignature(row, sessionRef.current) })
+      .then(() => setSelected(current => current === row.id ? null : current))
+      .catch(() => undefined);
   }
   function manual() {
     void sync.command({ action: "manual", id: crypto.randomUUID() }).catch(() => undefined);
@@ -374,8 +408,8 @@ export function ExamApp() {
                 <br />
                 2. Yeşil tikten sonra yeni kâğıda geç.
                 <br />
-                3. Sarı hücreleri fotoğrafla karşılaştır; tabloda düzenle veya
-                satırı kontrol et.
+                3. İstersen sarı hücreleri fotoğrafla karşılaştır; tabloda düzenle
+                veya satırı kontrol et.
                 <br />
                 4. Excel’i indir.
               </div>
@@ -391,7 +425,7 @@ export function ExamApp() {
               <p className="mt-2 text-xs text-slate-600">
                 Hücreler doğrudan düzenlenebilir.{" "}
                 <span className="rounded bg-amber-100 px-1 text-amber-900">
-                  Sarı: kontrol gerekli
+                  Sarı: kontrol önerilir
                 </span>{" "}
                 ·{" "}
                 <span className="rounded bg-emerald-100 px-1 text-emerald-900">
@@ -401,7 +435,6 @@ export function ExamApp() {
               </p>
             </div>
             <Button
-              disabled={!session.rows.length || issues.length > 0 || !usable || writing > 0 || uploads > 0}
               onClick={() => {
                 try {
                   exportExamWorkbook(sessionExam(sessionRef.current));
@@ -554,9 +587,9 @@ export function ExamApp() {
               className="border-t bg-amber-50 p-3 text-sm text-amber-900"
               role="status"
             >
-              Excel öncesi {issues.length} satır/ayar kontrol bekliyor.{" "}
-              {issues[0]} Sarı hücreler düzenlenebilir; değer doğruysa “Kontrol”
-              ekranında satırı onaylayın.
+              {issues.length} satır/ayar için kontrol önerilir.{" "}
+              {issues[0]} Kontrol isteğe bağlıdır; Excel’i istediğiniz zaman
+              mevcut tabloyla indirebilirsiniz.
             </p>
           )}
         </Card>
@@ -573,83 +606,72 @@ export function ExamApp() {
           if (!open) setSelected(null);
         }}
       >
-        <DialogContent className="max-h-[90vh] max-w-[calc(100%-2rem)] overflow-y-auto sm:max-w-4xl [&>*]:min-w-0">
-          <DialogHeader>
+        <DialogContent className="flex max-h-[94dvh] max-w-[calc(100%-1rem)] flex-col gap-0 overflow-hidden p-0 sm:max-w-6xl [&>*]:min-w-0">
+          <DialogHeader className="shrink-0 border-b px-4 py-4 pr-10 text-left">
             <DialogTitle>Satırı fotoğrafla kontrol edin</DialogTitle>
             <DialogDescription>
-              Değerleri fotoğrafla karşılaştırın. Yazılı toplam puanlardan
-              farklıysa yazıyı esas alın; sistem otomatik düzeltmez.
+              Fotoğraftaki alanlarla karşılaştırın; gerekirse okunan değerleri düzenleyin.
             </DialogDescription>
           </DialogHeader>
           {selectedRow && (
             <>
-              {photoUrl ? (
-                <img
-                  src={photoUrl}
-                  alt="Bu satırın kaynak sınav kâğıdı"
-                  className="w-full rounded-lg border"
-                />
-              ) : (
-                <p className="text-sm text-slate-500">
-                  {selectedRow.hasPhoto
-                    ? "Kaynak görüntü yükleniyor / bulunamadı."
-                    : "Elle girilen satır; kaynak fotoğraf yok."}
-                </p>
-              )}
-              {selectedRow.draft.warnings?.map((warning, i) => (
-                <p
-                  key={i}
-                  className="rounded-lg bg-amber-50 p-2 text-sm text-amber-900"
-                >
-                  {warning}
-                </p>
-              ))}
-              {metadataWarnings(session, selectedRow).map((warning, i) => (
-                <p
-                  key={`meta-${i}`}
-                  className="rounded-lg bg-amber-50 p-2 text-sm text-amber-900"
-                >
-                  {warning} · Aktif sınav ayarını kontrol edin; onay bu farkı
-                  kabul eder.
-                </p>
-              ))}
-              <div className="grid grid-cols-1 gap-3 min-[400px]:grid-cols-2 sm:grid-cols-3">
-                {cellKeys(session.pcMap.length).map((key) => (
-                  <div key={key}>
-                    <Label>
-                      {key === "fullName"
-                        ? "Ad soyad"
-                        : key === "studentNumber"
-                          ? "Öğrenci no"
-                          : key === "writtenTotal"
-                            ? "Yazılı toplam"
-                            : key.toUpperCase()}
-                    </Label>
-                    <EditableCell
-                      compact
-                      session={session}
-                      row={selectedRow}
-                      field={key}
-                      disabled={!editable}
-                      onEdit={(value) =>
-                        void updateRow(selectedRow.id, (row) =>
-                          editCell(row, key, value),
-                        ).catch(() => undefined)
-                      }
-                    />
-                    {selectedRow.draft.alternatives?.[key]?.length ? (
-                      <p className="text-xs text-amber-800">
-                        Okumalar:{" "}
-                        {selectedRow.draft.alternatives[key].join(" / ")}
-                      </p>
-                    ) : null}
+              <div className="flex min-h-0 flex-col overflow-hidden lg:grid lg:grid-cols-[minmax(0,1.3fr)_minmax(0,1fr)]">
+                <section aria-label="Kaynak fotoğraf" className="shrink-0 border-b bg-slate-50 p-3 lg:overflow-y-auto lg:border-b-0 lg:border-r lg:p-4">
+                  <div className="mb-2 flex items-center justify-between gap-2">
+                    <h3 className="text-sm font-semibold">Kaynak fotoğraf</h3>
+                    {photoUrl && <Button variant="outline" size="sm" className="h-8 bg-white" aria-pressed={photoZoom}
+                      onClick={() => setZoomedPhoto(photoZoom ? null : selected)}>
+                      {photoZoom ? <ZoomOut className="size-4" /> : <ZoomIn className="size-4" />}
+                      {photoZoom ? "Sığdır" : "Büyüt"}
+                    </Button>}
                   </div>
-                ))}
+                  {photoUrl ? (
+                    <div className="max-h-[30dvh] overflow-auto rounded-lg border bg-white lg:max-h-[65dvh]" tabIndex={0} aria-label="Fotoğraf görünümü; büyütüldüğünde kaydırabilirsiniz">
+                      <img src={photoUrl} alt="Bu satırın kaynak sınav kâğıdı"
+                        className={photoZoom ? "block w-[180%] max-w-none" : "mx-auto block max-h-[30dvh] w-full object-contain lg:max-h-none"} />
+                    </div>
+                  ) : (
+                    <p className="py-6 text-sm text-slate-500">
+                      {selectedRow.hasPhoto ? "Kaynak görüntü yükleniyor / bulunamadı." : "Elle girilen satır; kaynak fotoğraf yok."}
+                    </p>
+                  )}
+                </section>
+                <section aria-label="Okunan veriler" className="min-h-0 space-y-4 overflow-y-auto p-4">
+                  <h3 className="text-sm font-semibold">Okunan veriler</h3>
+                  <div className="grid grid-cols-1 gap-3 min-[400px]:grid-cols-2">
+                    {reviewField("fullName")}
+                    {reviewField("studentNumber")}
+                  </div>
+                  <div className="border-t pt-3">
+                    <h4 className="mb-3 text-xs font-semibold text-slate-500">Puanlar · kâğıttaki sırayla</h4>
+                    <div className="grid gap-2" style={{ gridTemplateColumns: `repeat(${Math.min(session.pcMap.length, 5)}, minmax(0, 1fr))` }}>
+                      {cellKeys(session.pcMap.length).filter(key => /^s\d+$/.test(key)).map(reviewField)}
+                    </div>
+                  </div>
+                  <div className="grid grid-cols-2 gap-3 rounded-lg border bg-slate-50 p-3">
+                    {reviewField("writtenTotal")}
+                    <div className="space-y-1.5">
+                      <p className="text-xs font-medium text-slate-600">Hesaplanan toplam</p>
+                      <p className="flex h-10 items-center px-3 text-lg font-semibold tabular-nums">{sumScores(selectedRow.draft.scores) ?? "—"}</p>
+                    </div>
+                  </div>
+                  {approvalProblem && <p role="alert" className="rounded-lg bg-amber-50 p-3 text-xs leading-5 text-amber-900">{approvalProblem}</p>}
+                  {totalMismatch && <p className="rounded-lg bg-amber-50 p-3 text-xs leading-5 text-amber-900">Yazılı toplam ({selectedRow.draft.writtenTotal}) ve puan toplamı ({scoreSum}) farklı. Puanları ve toplamı fotoğrafla karşılaştırın.</p>}
+                  {!!metadataReview.length && (
+                    <div className="rounded-lg bg-amber-50 p-3 text-xs leading-5 text-amber-900">
+                      <p className="font-medium">Ders / PÇ bilgilerini fotoğrafla karşılaştırın.</p>
+                      <ul className="mt-1 space-y-1">{metadataReview.map(warning => <li key={warning}>{warning}</li>)}</ul>
+                    </div>
+                  )}
+                  {!!readingDetails.length && (
+                    <details className="text-xs leading-5 text-slate-500">
+                      <summary className="cursor-pointer">Okuma ayrıntıları</summary>
+                      <ul className="mt-2 space-y-2">{readingDetails.map(detail => <li key={detail}>{detail}</li>)}</ul>
+                    </details>
+                  )}
+                </section>
               </div>
-              <p className="text-sm">
-                Hesaplanan toplam: {sumScores(selectedRow.draft.scores) ?? "—"}{" "}
-                · Kâğıtta yazan: {selectedRow.draft.writtenTotal || "—"}
-              </p>
+              <div className="flex shrink-0 flex-wrap justify-end gap-2 border-t bg-white px-4 py-3">
               {selectedRow.status === "error" && (
                 <Button
                   variant="outline"
@@ -665,13 +687,14 @@ export function ExamApp() {
                 </Button>
               )}
               <Button
-                className="h-auto whitespace-normal py-2"
-                disabled={!editable || writing > 0 || selectedRow.status !== "done"}
+                className="h-auto w-full whitespace-normal py-2 sm:w-auto"
+                disabled={!editable || writing > 0 || Boolean(approvalProblem)}
                 onClick={() => approve(selectedRow)}
               >
                 <CheckCircle2 className="size-4" />
-                Fotoğrafla karşılaştırdım, satırı onayla
+                Karşılaştırdım, satırı onayla
               </Button>
+              </div>
             </>
           )}
         </DialogContent>
@@ -695,9 +718,11 @@ function EditableCell({
   compact?: boolean;
 }) {
   const state = cellState(session, row, field);
+  const compactNumber = compact && field !== "fullName" && field !== "studentNumber";
   return (
     <div className="relative">
       <Input
+        id={compact ? `review-${row.id}-${field}` : undefined}
         aria-label={`${row.id} ${field}`}
         title={state.reason}
         disabled={disabled}
@@ -710,14 +735,14 @@ function EditableCell({
               : "decimal"
         }
         onChange={(e) => onEdit(e.target.value)}
-        className={`${compact ? "min-w-0" : field === "fullName" ? "min-w-48" : field === "studentNumber" ? "min-w-36 font-mono" : "min-w-20"} pr-6 ${state.color === "yellow" ? "border-amber-300 bg-amber-50" : state.color === "green" ? "border-emerald-200 bg-emerald-50" : "bg-slate-50"}`}
+        className={`${compact ? "min-w-0" : field === "fullName" ? "min-w-48" : field === "studentNumber" ? "min-w-36" : "min-w-20"} ${field === "studentNumber" ? "font-mono" : ""} ${compactNumber ? "px-1 text-center text-base font-semibold tabular-nums" : "pr-6"} ${state.color === "yellow" ? "border-amber-300 bg-amber-50" : state.color === "green" ? "border-emerald-200 bg-emerald-50" : "bg-slate-50"}`}
       />
-      {state.color === "yellow" ? (
+      {state.color === "yellow" && !compactNumber ? (
         <AlertTriangle
           aria-label={state.reason}
           className="pointer-events-none absolute right-2 top-3 size-3 text-amber-600"
         />
-      ) : state.color === "green" ? (
+      ) : state.color === "green" && !compactNumber ? (
         <CheckCircle2
           aria-label={state.reason}
           className="pointer-events-none absolute right-2 top-3 size-3 text-emerald-600"

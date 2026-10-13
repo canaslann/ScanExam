@@ -3,6 +3,7 @@ import test from "node:test";
 import {
   compactPaperHeight,
   detectPaperRegions,
+  detectPaperLayout,
 } from "../lib/paper-regions.ts";
 import {
   compareReadings,
@@ -16,6 +17,7 @@ function fixture({
   lastRow = true,
   questionCount = 5,
   scoreRight = 416,
+  scoreRows = [226, 250, 274, 298],
 } = {}) {
   const width = 640,
     height = 384,
@@ -33,16 +35,16 @@ function fixture({
   );
   [20, 113, 305, 371, 533, 620].forEach((x) => v(x, 100, 145));
   if (scores) {
-    [226, 250, 274, ...(lastRow ? [298] : [])].forEach((y) => h(y, scoreRight));
+    [...scoreRows.slice(0, 3), ...(lastRow ? [scoreRows[3]] : [])].forEach((y) => h(y, scoreRight));
     [
       20,
       ...Array.from({ length: questionCount + 1 }, (_, i) =>
         Math.round(96 + ((scoreRight - 96) * i) / questionCount),
       ),
-    ].forEach((x) => v(x, 226, 274));
-    v(20, 274, 298);
-    v(96, 274, 298);
-    v(scoreRight, 274, 298);
+    ].forEach((x) => v(x, scoreRows[0], scoreRows[2]));
+    v(20, scoreRows[2], scoreRows[3]);
+    v(96, scoreRows[2], scoreRows[3]);
+    v(scoreRight, scoreRows[2], scoreRows[3]);
   }
   return { data, width, height };
 }
@@ -79,6 +81,13 @@ test("variable-width score grids validate configured 1, 3, 7, 12 and 30 columns"
       detectPaperRegions(data, width, height, 1, undefined, count),
       `S1–S${count} not detected`,
     );
+    const layout = detectPaperLayout(data, width, height, 1, undefined, count);
+    assert.equal(layout.scoreCells.length, count);
+    for (let i = 0; i < count; i++) {
+      const cell = layout.scoreCells[i];
+      assert.ok(cell.width > 0 && cell.top > 240 && cell.top + cell.height < 285);
+      if (i) assert.ok(cell.left > layout.scoreCells[i - 1].left);
+    }
     assert.equal(
       detectPaperRegions(data, width, height, 1, undefined, count + 1),
       null,
@@ -96,6 +105,19 @@ test("blank/unknown/partial templates fall back instead of inventing crop coordi
     const { data, width, height } = fixture(options);
     assert.equal(detectPaperRegions(data, width, height, 1), null);
   }
+});
+
+test("small ruling localization differences do not reject a complete table, but unequal/missing rows stay rejected", () => {
+  for (const scoreRows of [[226, 251, 277, 295], [226, 250, 274, 291]]) {
+    const { data, width, height } = fixture({ scoreRows });
+    const layout = detectPaperLayout(data, width, height, 1);
+    assert.ok(layout, `complete table with ${scoreRows} should tolerate line-localization noise`);
+    assert.equal(layout.scoreCells.length, 5);
+    assert.ok(layout.writtenTotal.top > 265 && layout.writtenTotal.top + layout.writtenTotal.height >= scoreRows[3]);
+    assert.equal(detectPaperLayout(data, width, height, 1, undefined, 4), null);
+  }
+  const { data, width, height } = fixture({ scoreRows: [226, 240, 290, 306] });
+  assert.equal(detectPaperLayout(data, width, height, 1), null);
 });
 const parts = {
   student: {

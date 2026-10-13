@@ -1,7 +1,7 @@
 import { DatabaseSync } from "node:sqlite";
 import { randomUUID } from "node:crypto";
 import {
-  cellKeys, cellValue, confirmRow, editCell, emptyRow, MAX_PENDING, mergeReading,
+  approvalIssue, cellKeys, cellValue, confirmRow, editCell, emptyRow, MAX_PENDING, mergeReading,
   newSession, restoreSession, rowSignature, type CellKey, type ScanRow, type ScanSession,
 } from "./scan-session.ts";
 import { validPcCode, validQuestionCount, type ScanOutput } from "./exam.ts";
@@ -83,9 +83,12 @@ export class SharedSessionStore {
           if (cellValue(row, field) !== command.previous) throw new SharedError("Bu hücre diğer cihazda değişti. Yeni değer korunuyor; kontrol edip tekrar düzenleyin.", 409);
           session.rows = session.rows.map(r => r.id === row.id ? editCell(r, field, command.value as string) : r); break;
         }
-        case "approve":
+        case "approve": {
           if (!row || command.signature !== rowSignature(row, session)) throw new SharedError("Kontrol sırasında satır veya sınav ayarı değişti; yeniden karşılaştırın.", 409);
+          const issue = approvalIssue(session, row);
+          if (issue) throw new SharedError(issue);
           session.rows = session.rows.map(r => r.id === row.id ? confirmRow(session, row) : r); break;
+        }
         case "remove":
           if (!row || row.status === "reading" || command.signature !== rowSignature(row, session)) throw new SharedError("Satır değişti veya okunuyor; silinmedi.", 409);
           session.rows = session.rows.filter(r => r.id !== row.id);

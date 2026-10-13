@@ -70,8 +70,11 @@ export function LiveCamera({
           ...(device
             ? { deviceId: { exact: device } }
             : { facingMode: { ideal: "environment" } }),
-          width: { ideal: 1920 },
-          height: { ideal: 1080 },
+          // Portrait streams often expose the shorter side as videoWidth.
+          // Ask for more optical detail before the existing 1600px snapshot
+          // limit; "ideal" still allows cameras to negotiate a lower size.
+          width: { ideal: 2560 },
+          height: { ideal: 1440 },
         },
       });
       if (disposed) {

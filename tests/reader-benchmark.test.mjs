@@ -11,6 +11,24 @@ test("benchmark distinguishes wrong digits/diacritics and preserves leading zero
   assert.equal(compareFields(paper, paper).filter((f) => f.category !== "printed").length, 8);
 });
 
+test("benchmark evaluates every configured question and PÇ, including two-digit indices", () => {
+  for (const count of [1, 3, 7, 12, 30]) {
+    const expected = { ...paper, scores: Array(count).fill("2"), pcMap: Array(count).fill("PÇ99") };
+    const actual = { ...expected, scores: [...expected.scores], pcMap: [...expected.pcMap] };
+    actual.scores[count - 1] = "3";
+    actual.pcMap[count - 1] = "PÇ98";
+    const fields = compareFields(expected, actual);
+    assert.equal(fields.length, 5 + count * 2);
+    assert.deepEqual(fields.filter(f => !f.correct).map(f => f.field), [`s${count}`, `pc${count}`]);
+    const result = summarize([{ fields, elapsedMs: 1000 }]);
+    assert.deepEqual(result.categories.scores, { correct: count - 1, total: count });
+    assert.deepEqual(result.categories.printed, { correct: count + 1, total: count + 2 });
+    assert.deepEqual(result.critical, { correct: count + 2, total: count + 3 });
+    assert.equal(compareFields(expected, {}, [`s${count}`]).length, fields.length - 1);
+  }
+  for (const count of [0, 31]) assert.throws(() => compareFields({ scores: Array(count).fill("1") }), /1–30/);
+});
+
 test("native OCR parser reads total independently and never repairs arithmetic", () => {
   const parsed = parseNativeScores('<table><tr><td>(S1)-PC2</td><td>(S2)-PC1</td><td>(S3)-PC3</td><td>(S4)-PC2</td><td>(S5)-PC4</td></tr><tr><td>Puan:</td><td>14</td><td>17</td><td>19</td><td>13</td><td>15</td></tr><tr><td>Not:</td><td>76</td></tr></table>');
   assert.deepEqual(parsed.scores, paper.scores);

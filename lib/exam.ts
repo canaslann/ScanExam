@@ -32,6 +32,14 @@ export type ExamState = {
   results: StudentResult[];
 };
 
+export type WorkbookExam = Omit<ExamState, "results"> & {
+  results: (Omit<StudentResult, "scores" | "writtenTotal" | "calculatedTotal"> & {
+    scores: (number | string | null)[];
+    writtenTotal: number | string | null;
+    calculatedTotal: number | null;
+  })[];
+};
+
 export type ScanDraft = {
   studentNumber: string;
   fullName: string;
@@ -95,7 +103,7 @@ function average(values: number[]) {
           2,
         ),
       )
-    : 0;
+    : null;
 }
 
 function safeFilename(value: string) {
@@ -107,22 +115,18 @@ function safeFilename(value: string) {
     .toUpperCase();
 }
 
-export function createExamWorkbook(exam: ExamState) {
+export function createExamWorkbook(exam: WorkbookExam) {
   if (
     !validQuestionCount(exam.pcMap.length) ||
     !exam.pcMap.every(validPcCode) ||
     exam.results.some(
       (row) =>
         row.scores.length !== exam.pcMap.length ||
-        row.scores.some(
-          (score) => !Number.isFinite(score) || score < 0 || score > 100,
-        ) ||
-        !Number.isFinite(row.writtenTotal) ||
-        row.writtenTotal < 0 ||
-        row.writtenTotal > 100,
+        row.scores.some(score => typeof score === "number" && !Number.isFinite(score)) ||
+        (typeof row.writtenTotal === "number" && !Number.isFinite(row.writtenTotal)),
     )
   )
-    throw new Error("Excel için soru sayısı ve puanlar geçerli olmalı.");
+    throw new Error("Excel için soru sütunları sınav düzeniyle eşleşmeli.");
   const pcTypes = [...new Set(exam.pcMap)].sort(
     (a, b) => Number(a.slice(2)) - Number(b.slice(2)),
   );
@@ -135,12 +139,18 @@ export function createExamWorkbook(exam: ExamState) {
   ];
 
   const rows = exam.results.map((result) => {
-    const totals = pcTotals(result.scores, exam.pcMap);
+    const totals = Object.fromEntries(pcTypes.map(pc => {
+      const values = result.scores.filter((_, index) => exam.pcMap[index] === pc);
+      // A missing/invalid mark must not silently contribute a zero to PÇ totals.
+      const total = values.every(value => typeof value === "number")
+        ? (values as number[]).reduce((sum, value) => sum + value, 0) : null;
+      return [pc, total];
+    }));
     return [
       result.studentNumber,
       result.fullName,
       ...result.scores,
-      ...pcTypes.map((pc) => totals[pc] || 0),
+      ...pcTypes.map((pc) => totals[pc]),
       result.writtenTotal,
     ];
   });
@@ -149,10 +159,10 @@ export function createExamWorkbook(exam: ExamState) {
     { length: exam.pcMap.length + pcTypes.length + 1 },
     (_, offset) => offset + 2,
   );
-  const averageRow: (string | number)[] = ["", "ORTALAMA"];
+  const averageRow: (string | number | null)[] = ["", "ORTALAMA"];
   numericColumns.forEach((columnIndex) => {
     averageRow[columnIndex] = average(
-      rows.map((row) => Number(row[columnIndex] ?? 0)),
+      rows.map(row => row[columnIndex]).filter((value): value is number => typeof value === "number" && Number.isFinite(value)),
     );
   });
 
@@ -181,7 +191,7 @@ export function createExamWorkbook(exam: ExamState) {
   return workbook;
 }
 
-export function exportExamWorkbook(exam: ExamState) {
+export function exportExamWorkbook(exam: WorkbookExam) {
   const workbook = createExamWorkbook(exam);
   const filename = `${safeFilename(exam.courseCode)}_${safeFilename(exam.courseName)}.xlsx`;
   XLSX.writeFile(workbook, filename);

@@ -9,6 +9,8 @@ export type PreparedPaper = {
   compactImage?: string;
   identity?: IdentityImages;
   totalImage?: string;
+  totalContrastImage?: string;
+  scoreCells?: { color: string; padded: string }[];
 };
 
 /** Fixed form geometry supplies identity cells; question columns remain dynamic. */
@@ -44,8 +46,22 @@ export async function prepareServerPaper(bytes: Uint8Array, questionCount: numbe
     identity[`${key}Padded`] = (await sharp(Buffer.from(identity[`${key}Zoom`], "base64"))
       .extend({ top: 24, bottom: 24, left: 24, right: 24, background: "white" }).jpeg({ quality: 94 }).toBuffer()).toString("base64");
   const totalImage = await crop(layout.writtenTotal, 2);
+  // An additional OCR view only. The color source remains available and is
+  // preferred; thresholding may remove faint/color strokes and is never a
+  // replacement for a valid original reading.
+  const totalContrastImage = (await sharp(Buffer.from(totalImage, "base64"))
+    .normalise().threshold(140).png().toBuffer()).toString("base64");
+  // Cell detail supports excess-total and confusable-digit checks while the
+  // complete table supplies the primary transcription.
+  const scoreCells = await Promise.all(layout.scoreCells.map(async box => {
+    const color = await crop(box, 2);
+    const padded = (await sharp(Buffer.from(color, "base64"))
+      .extend({ top: 20, bottom: 20, left: 20, right: 20, background: "white" })
+      .jpeg({ quality: 94 }).toBuffer()).toString("base64");
+    return { color, padded };
+  }));
   const compactImage = (await sharp(buffer).extract({ left: 0, top: 0, width,
     height: compactPaperHeight(layout.regions.scores, scale, height),
   }).jpeg({ quality: 94 }).toBuffer()).toString("base64");
-  return { image, regions, identity, compactImage, totalImage };
+  return { image, regions, identity, compactImage, totalImage, totalContrastImage, scoreCells };
 }

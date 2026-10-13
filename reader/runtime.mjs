@@ -88,7 +88,9 @@ export async function startReader() {
     windowsHide: true,
     stdio: ["ignore", log, log],
     env: { ...process.env, OLLAMA_HOST: url.host, OLLAMA_MODELS: join(runtimeRoot, "models"),
-      OLLAMA_NO_CLOUD: "true", OLLAMA_NUM_PARALLEL: "1", OLLAMA_MAX_LOADED_MODELS: "1", OLLAMA_CONTEXT_LENGTH: "4096" },
+      // Native OCR and the name-language checker can stay resident together.
+      // Requests remain sequential; the local engine manages available memory.
+      OLLAMA_NO_CLOUD: "true", OLLAMA_NUM_PARALLEL: "1", OLLAMA_MAX_LOADED_MODELS: "2", OLLAMA_CONTEXT_LENGTH: "4096" },
   });
   closeSync(log);
   child.unref();

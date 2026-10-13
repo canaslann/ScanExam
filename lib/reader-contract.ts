@@ -270,16 +270,19 @@ export function normalizePaper(raw: unknown, questionCount = 5): ScanOutput {
     Math.abs(calculated - written) > 0.001
   ) {
     warnings.push(
-      `Kâğıtta yazan toplam (${writtenTotal}) ile puanların toplamı (${calculated}) uyuşmuyor. Hiçbir değer otomatik değiştirilmedi.`,
+      `Kâğıtta yazan toplam (${writtenTotal}) ile puanların toplamı (${calculated}) uyuşmuyor. Uyuşmazlığı fotoğrafla kontrol edin.`,
     );
     // Arithmetic identifies a row-level inconsistency, not which score was
     // misread. Flag the total/checkpoint without labelling every score uncertain.
     reviewFields.add("writtenTotal");
   }
-  if (calculated !== null && calculated > 100)
+  if (calculated !== null && calculated > 100) {
+    scores.forEach((_, index) => reviewFields.add(`s${index + 1}`));
+    reviewFields.add("writtenTotal");
     warnings.push(
-      "Soru puanlarının toplamı 100'ü geçiyor; puanları kontrol edin.",
+      "Soru puanlarının toplamı 100'ü geçiyor; puanları fotoğrafla karşılaştırın.",
     );
+  }
   return {
     fullName,
     studentNumber,

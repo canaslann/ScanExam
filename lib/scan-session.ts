@@ -3,6 +3,7 @@ import {
   validPcCode,
   validQuestionCount,
   type ExamState,
+  type WorkbookExam,
   type PcCode,
   type ScanOutput,
 } from "./exam.ts";
@@ -130,6 +131,20 @@ export function duplicateNumber(session: ScanSession, row: ScanRow): boolean {
       ),
   );
 }
+/** Explain validation before approval, using the same rules on both devices. */
+export function approvalIssue(session: ScanSession, row: ScanRow): string | undefined {
+  if (row.status === "error") return row.error || "Okuma başarısız. Yeniden deneyin veya alanları elle tamamlayın.";
+  if (row.status !== "done") return "Satırın okuması henüz tamamlanmadı.";
+  if ((sumScores(row.draft.scores) ?? 0) > 100)
+    return "Puan toplamı 100'ü aşıyor. Onaylamadan önce puanları fotoğrafla düzeltin.";
+  const missing = cellKeys(session.pcMap.length).filter(key => !validCell(row, key));
+  const label = (key: CellKey) => key === "fullName" ? "Ad soyad" : key === "studentNumber" ? "Öğrenci no" : key === "writtenTotal" ? "Yazılı toplam" : key.toUpperCase();
+  if (missing.length) return `Eksik veya geçersiz alanları düzeltin: ${missing.map(label).join(", ")}.`;
+  if (duplicateNumber(session, row)) {
+    const others = session.rows.flatMap((other, i) => other.id !== row.id && other.draft.studentNumber.trim() === row.draft.studentNumber.trim() ? [i + 1] : []);
+    return `Bu öğrenci numarası ${others.join(", ")}. satırda da var. Numarayı fotoğrafla kontrol edin veya mükerrer satırı kaldırın.`;
+  }
+}
 export function cellState(
   session: ScanSession,
   row: ScanRow,
@@ -152,6 +167,8 @@ export function cellState(
     };
   const calculated = sumScores(row.draft.scores),
     total = parseScore(row.draft.writtenTotal);
+  if (calculated !== null && calculated > 100 && (key === "writtenTotal" || /^s\d+$/.test(key)))
+    return { color: "yellow", reason: "100 puanlık sınavda puan toplamı 100'ü aşamaz. Puanları düzeltin; bu çelişki yalnız onayla geçilemez." };
   const mismatch =
     calculated !== null &&
     total !== null &&
@@ -217,10 +234,10 @@ export function metadataWarnings(session: ScanSession, row: ScanRow): string[] {
     warnings.push(
       `PÇ eşleşmesi: ${d.pcMap?.join(", ") || "okunamadı"} (aktif: ${session.pcMap.join(", ")})`,
     );
-  for (const key of ["courseCode", "courseName", "pcMap"])
-    if (d.reviewFields?.includes(key))
+  for (const [key, label] of [["courseCode", "Ders kodu"], ["courseName", "Ders adı"], ["pcMap", "PÇ eşleşmesi"]])
+    if (d.reviewFields?.includes(key) && !warnings.some(warning => warning.startsWith(`${label}:`)))
       warnings.push(
-        `${key}: okuyucu kontrol istiyor. ${d.alternatives?.[key]?.join(" / ") || ""}`,
+        `${label}: fotoğrafla kontrol edin.${d.alternatives?.[key]?.length ? ` Alternatifler: ${d.alternatives[key].join(" / ")}` : ""}`,
       );
   return warnings;
 }
@@ -228,14 +245,8 @@ export function metadataSignature(session: ScanSession, row: ScanRow) {
   return JSON.stringify(metadataWarnings(session, row));
 }
 export function confirmRow(session: ScanSession, row: ScanRow): ScanRow {
-  if (
-    row.status !== "done" ||
-    !cellKeys(session.pcMap.length).every((key) => validCell(row, key)) ||
-    duplicateNumber(session, row)
-  )
-    throw new Error(
-      "Önce eksik/geçersiz hücreleri ve mükerrer numarayı düzeltin.",
-    );
+  const issue = approvalIssue(session, row);
+  if (issue) throw new Error(issue);
   return {
     ...row,
     confirmed: cellKeys(session.pcMap.length),
@@ -267,11 +278,9 @@ export function exportIssues(session: ScanSession): string[] {
       : [];
   });
 }
-export function sessionExam(session: ScanSession): ExamState {
-  if (exportIssues(session).length)
-    throw new Error(
-      "Excel öncesinde bekleyen okumaları ve sarı alanları kontrol edin.",
-    );
+/** Export the current local snapshot; review and connectivity never gate it. */
+export function sessionExam(session: ScanSession): WorkbookExam {
+  const mark = (value: string) => value.trim() ? parseScore(value) ?? value : null;
   return {
     courseCode: session.courseCode,
     courseName: session.courseName,
@@ -281,10 +290,10 @@ export function sessionExam(session: ScanSession): ExamState {
       createdAt: row.createdAt,
       fullName: row.draft.fullName.trim(),
       studentNumber: row.draft.studentNumber.trim(),
-      scores: row.draft.scores.map((score) => parseScore(score)!),
-      writtenTotal: parseScore(row.draft.writtenTotal)!,
-      calculatedTotal: sumScores(row.draft.scores)!,
-      needsReview: false,
+      scores: row.draft.scores.map(mark),
+      writtenTotal: mark(row.draft.writtenTotal),
+      calculatedTotal: sumScores(row.draft.scores),
+      needsReview: cellKeys(session.pcMap.length).some(key => cellState(session, row, key).color !== "green"),
     })),
   };
 }

@@ -66,6 +66,28 @@ test("different-field edits merge; same-cell stale edits and stale approvals are
   assert.throws(() => command(b, "approve", { id, signature: rowSignature(old.session.rows[0], old.session) }), error => error.status === 409);
   assert.equal(cellValue(a.snapshot().session.rows[0], "s1"), "15");
 });
+
+test("a valid reviewed row can be approved; duplicate and invalid rows return actionable client errors atomically", async t => {
+  const { a, command } = await fixture(t), id = randomUUID();
+  command(a, "capture", { id, mode: "single" }, new Uint8Array([1]));
+  const job = a.claim(); a.finish(id, job.token, reading());
+  let state = a.snapshot();
+  command(a, "approve", { id, signature: rowSignature(state.session.rows[0], state.session) });
+  assert.equal(a.snapshot().session.rows[0].confirmed.length, 8);
+  const other = randomUUID();
+  command(a, "capture", { id: other, mode: "single" }, new Uint8Array([2]));
+  const second = a.claim(); a.finish(other, second.token, reading());
+  state = a.snapshot();
+  assert.throws(() => command(a, "approve", { id, signature: rowSignature(state.session.rows[0], state.session) }),
+    error => error.status === 400 && /2\. satırda da var/.test(error.message));
+  assert.equal(a.snapshot().revision, state.revision);
+  command(a, "edit", { id, field: "studentNumber", previous: "00001234567", value: "00001234568" });
+  command(a, "edit", { id, field: "s1", previous: "10", value: "" });
+  state = a.snapshot();
+  assert.throws(() => command(a, "approve", { id, signature: rowSignature(state.session.rows[0], state.session) }),
+    error => error.status === 400 && /S1/.test(error.message));
+  assert.equal(a.snapshot().revision, state.revision);
+});
 test("background reading preserves in-flight edits; cancellation prevents stale output from resurrecting a row", async t => {
   const { a, b, command } = await fixture(t), id = randomUUID();
   command(a, "capture", { id, mode: "single" }, new Uint8Array([1]));
@@ -73,7 +95,7 @@ test("background reading preserves in-flight edits; cancellation prevents stale 
   command(b, "edit", { id, field: "s2", previous: "", value: "15" });
   a.finish(id, job.token, reading());
   assert.equal(a.snapshot().session.rows[0].draft.scores[1], "15");
-  assert.throws(() => sessionExam(a.snapshot().session));
+  assert.equal(sessionExam(a.snapshot().session).results[0].scores[1], 15);
   const secondId = randomUUID();
   command(a, "capture", { id: secondId, mode: "single" }, new Uint8Array([2]));
   const second = a.claim(); command(b, "cancel", { id: secondId });

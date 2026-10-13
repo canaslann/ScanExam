@@ -3,21 +3,24 @@ const folded = (value) => text(value).toLocaleLowerCase("tr-TR");
 const number = (value) => /^\d{1,3}(?:[.,]\d{1,2})?$/.test(text(value)) ? Number(text(value).replace(",", ".")) : null;
 
 export function compareFields(expected, actual = {}, excluded = []) {
+  const count = expected.scores?.length;
+  if (!Number.isInteger(count) || count < 1 || count > 30)
+    throw new Error("Expected scores must contain 1–30 questions.");
   const fields = ["fullName", "studentNumber", "writtenTotal", "courseCode", "courseName",
-    ...Array.from({ length: 5 }, (_, i) => `s${i + 1}`), ...Array.from({ length: 5 }, (_, i) => `pc${i + 1}`)];
-  const get = (object, key) => /^s\d$/.test(key) ? object.scores?.[Number(key[1]) - 1]
-    : /^pc\d$/.test(key) ? object.pcMap?.[Number(key[2]) - 1] : object[key];
+    ...Array.from({ length: count }, (_, i) => `s${i + 1}`), ...Array.from({ length: count }, (_, i) => `pc${i + 1}`)];
+  const get = (object, key) => /^s\d+$/.test(key) ? object.scores?.[Number(key.slice(1)) - 1]
+    : /^pc\d+$/.test(key) ? object.pcMap?.[Number(key.slice(2)) - 1] : object[key];
   const normalize = (value, key) => {
     if (key === "studentNumber") return text(value).replace(/\s/g, ""); // Leading zeros remain meaningful.
     if (key === "courseCode") return text(value).toLocaleUpperCase("tr-TR").replaceAll("İ", "I").replace(/\s/g, "");
-    if (/^s\d$/.test(key) || key === "writtenTotal") return number(value) === null ? `invalid:${text(value)}` : String(number(value));
+    if (/^s\d+$/.test(key) || key === "writtenTotal") return number(value) === null ? `invalid:${text(value)}` : String(number(value));
     return folded(value);
   };
   return fields.filter((key) => !excluded.includes(key)).map((key) => ({
     field: key, expected: get(expected, key) ?? "", actual: get(actual, key) ?? "",
     correct: normalize(get(expected, key), key) === normalize(get(actual, key), key),
-    category: /^pc\d$/.test(key) || key.startsWith("course") ? "printed"
-      : /^s\d$/.test(key) ? "scores" : key === "writtenTotal" ? "total" : "identity",
+    category: /^pc\d+$/.test(key) || key.startsWith("course") ? "printed"
+      : /^s\d+$/.test(key) ? "scores" : key === "writtenTotal" ? "total" : "identity",
   }));
 }
 

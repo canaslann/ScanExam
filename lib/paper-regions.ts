@@ -13,6 +13,7 @@ export type PaperLayout = {
   regions: Record<RegionKey, CropBox>;
   identity: Record<"fullName" | "studentNumber" | "combined" | "fullNameLabelled" | "studentNumberLabelled", CropBox>;
   writtenTotal: CropBox;
+  scoreCells: CropBox[];
 };
 type Line = {
   y: number;
@@ -235,10 +236,13 @@ export function detectPaperLayout(
     )[0] || [];
   debug?.("scores", scoreLines);
   if (scoreLines.length !== 4) return null;
-  const rowGaps = scoreLines
-    .slice(1)
-    .map((line, i) => line.y - scoreLines[i].y);
-  if (Math.max(...rowGaps) / Math.min(...rowGaps) > 1.4) return null;
+  // y is measured at the image centre, often outside this narrower table.
+  // Compare actual row heights at the table centre and account for the ±3px
+  // ruling search band; JPEG/thin lines can shift the selected peak slightly.
+  const scoreMiddle = (scoreLines[0].left + scoreLines[0].right) / 2;
+  const rowY = (line: Line) => line.y + line.slope * (scoreMiddle - middle);
+  const rowGaps = scoreLines.slice(1).map((line, i) => rowY(line) - rowY(scoreLines[i]));
+  if (Math.min(...rowGaps) <= 6 || Math.max(...rowGaps) > Math.min(...rowGaps) * 1.4 + 6) return null;
   const scoreSpan = scoreLines[0].right - scoreLines[0].left;
   if (
     scoreLines.some(
@@ -343,6 +347,7 @@ export function detectPaperLayout(
     return { left: x, top, width: end - x, height: bottom - top };
   };
   return {
+    scoreCells: scoreColumns.slice(2).map((x, i) => box(scoreColumns[i + 1], x, scoreLines[1], scoreLines[2], 2)),
     writtenTotal: box(scoreColumns[1], scoreLines[0].right, scoreLines[2], scoreLines[3], 2),
     identity: {
       fullName: box(studentLeft, studentRight, main[2], main[3], 2),
