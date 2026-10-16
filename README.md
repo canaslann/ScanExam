@@ -43,6 +43,8 @@ Geliştirmede telefonda da güvenilen, adresinize uygun sertifika varsa `SCANEXA
 
 ## Tarama, ortak tablo ve Excel
 
+Üst çubuktaki **Açık / Koyu / Sistem** seçenekleri görünüm temasını değiştirir. Varsayılan Sistem, cihazın açık/koyu tercihine uyar; seçiminiz bu tarayıcıda saklanır. Sınav düzeni, canlı tarama ve sonuçlar bağlantıları ilgili bölüme götürür.
+
 1. Ders, **1–30 soru** ve bağımsız **PÇ1–PÇ99** değerlerini ayarlayın. Aynı PÇ birden çok soruya atanabilir. İlk satırdan sonra soru sayısı kilitlenir. Basılı ders/PÇ okumasındaki fark sessizce ayarı değiştirmez.
 2. Üst form ve **Puan / Not satırlarının tamamını** hizalayın. En az üç uygun kare ve 500 ms sabitlik gerekir; analiz aralığı 180 ms. Odak/analiz/kayıt ek süre getirir: gerçek telefon süresi garantisi değildir. Aynı sabitlik aralığının en iyi kenar/kontrast karesi seçilir; bu OCR güveni değildir. Renk korunur. Kırmızı/siyah kalem başarısı ışık, kontrast ve el yazısına bağlıdır.
 3. **Yeşil tik = görüntü bu cihazın IndexedDB aktarım kuyruğuna kalıcı kaydedildi.** Aktarım/OCR arka plandadır; modeli beklemeden sonraki kâğıda geçin. Tutulan kâğıt tekrar yakalanmaz. Kâğıdı çıkarın veya üst üste değişimde “Sonraki kâğıda hazırla”yı kullanın; yanlış kullanım mükerrer kayıt yaratabilir.

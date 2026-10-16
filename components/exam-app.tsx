@@ -1,7 +1,9 @@
 "use client";
 /* eslint-disable @next/next/no-img-element -- Source photos are fetched from the local computer, never an image optimizer. */
 import { useEffect, useRef, useState } from "react";
-import { AlertTriangle, CheckCircle2, FileSpreadsheet, LoaderCircle, PencilLine, ScanLine, Trash2, Upload, ZoomIn, ZoomOut } from "lucide-react";
+import { AlertTriangle, ArrowDown, ArrowUpRight, CheckCircle2, CircleDot, FileSpreadsheet, Layers3, LoaderCircle, PencilLine, Plus, ScanLine, ShieldCheck, Trash2, Upload, ZoomIn, ZoomOut } from "lucide-react";
+import { useTheme } from "next-themes";
+import { ThemeControls } from "@/components/theme-controls";
 import { Toaster, toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -27,6 +29,7 @@ async function readerStatus(): Promise<ReaderStatus> {
   }
 }
 export function ExamApp() {
+  const { resolvedTheme } = useTheme();
   const sync = useSharedScan();
   const { session, sessionRef, ready, error: storageError, paused, uploads, writing, updateRow, updateMeta } = sync;
   const [mode, setMode] = useState<CheckMode>("single"), [status, setStatus] = useState<ReaderStatus | null>(null);
@@ -50,10 +53,9 @@ export function ExamApp() {
   }, [selected]);
   const serverPending = session.rows.filter(row => row.status === "queued" || row.status === "reading").length;
   const pending = serverPending + uploads;
-  const progress = uploads > 0 ? `${uploads} görüntü bilgisayara aktarılmayı bekliyor · bu cihazda kayıtlı`
-    : session.rows.some(row => row.status === "reading") ? "Bilgisayar arka planda okuyor · sonraki kâğıdı tarayabilirsiniz."
-    : serverPending > 0 ? "Kâğıtlar bilgisayarda sırada · model hazırlanıyor veya sıra bekliyor; taramaya devam edebilirsiniz."
-    : ready ? "Telefon / bilgisayar ortak tabloya bağlı · değişiklikler otomatik güncellenir." : "";
+  const progress = uploads > 0 ? `${uploads} görüntü aktarım bekliyor · bu cihazda kayıtlı`
+    : session.rows.some(row => row.status === "reading") ? "Okuma sürüyor · taramaya devam edebilirsiniz."
+    : serverPending > 0 ? "Okuma sırası bekleniyor · taramaya devam edebilirsiniz." : "";
   const issues = exportIssues(session), selectedRow = session.rows.find(row => row.id === selected);
   const editable = sync.connected, usable = editable;
   const completed = session.rows.filter(row => row.status === "done").length;
@@ -70,14 +72,14 @@ export function ExamApp() {
     const question = /^s\d+$/.test(key);
     return (
       <div key={key} className="min-w-0 space-y-1.5">
-        <Label htmlFor={`review-${selectedRow.id}-${key}`} className="text-xs text-slate-600">
+        <Label htmlFor={`review-${selectedRow.id}-${key}`} className="text-xs text-muted-foreground">
           {key === "fullName" ? "Ad soyad" : key === "studentNumber" ? "Öğrenci no" : key === "writtenTotal" ? "Kâğıtta yazan toplam" : key.toUpperCase()}
-          {question && <span className="ml-1 text-[10px] text-slate-400">{session.pcMap[Number(key.slice(1)) - 1]}</span>}
+          {question && <span className="ml-1 text-[10px] text-muted-foreground">{session.pcMap[Number(key.slice(1)) - 1]}</span>}
         </Label>
         <EditableCell compact session={session} row={selectedRow} field={key} disabled={!editable}
           onEdit={value => void updateRow(selectedRow.id, row => editCell(row, key, value)).catch(() => undefined)} />
         {!!selectedRow.draft.alternatives?.[key]?.length && (
-          <details className="text-xs text-amber-800">
+          <details className="text-xs text-warning-text">
             <summary className="cursor-pointer">Alternatifler</summary>
             <p className="mt-1 break-words">{selectedRow.draft.alternatives[key].join(" / ")}</p>
           </details>
@@ -108,21 +110,26 @@ export function ExamApp() {
     void sync.command({ action: "manual", id: crypto.randomUUID() }).catch(() => undefined);
   }
   return (
-    <main className="min-h-screen pb-10 text-slate-900">
-      <Toaster richColors position="top-center" />
-      <header className="border-b border-slate-200 bg-white px-4 py-4">
-        <div className="mx-auto flex max-w-7xl flex-wrap items-center justify-between gap-3">
+    <main className="exam-app min-h-screen pb-10 text-foreground">
+      <Toaster theme={resolvedTheme === "dark" ? "dark" : "light"} richColors position="top-center" />
+      <header className="app-header">
+        <div className="workspace-width flex flex-wrap items-center justify-between gap-3">
           <div className="flex items-center gap-3">
-            <ScanLine className="size-7 text-primary" />
+            <div className="brand-mark"><ScanLine className="size-6" /></div>
             <div>
-              <h1 className="text-xl font-bold">Sınav Tarayıcı</h1>
-              <p className="text-xs text-slate-500">
-                Canlı tarama · yerel okuyucu · düzenlenebilir tablo
-              </p>
+              <h1 className="brand-title">Scan Exam</h1>
             </div>
           </div>
+          <nav className="header-nav" aria-label="Çalışma alanı">
+            <a href="#exam-setup">Sınav düzeni</a>
+            <a href="#live-scan">Canlı tarama</a>
+            <a href="#results">Sonuçlar <ArrowUpRight className="size-3.5" /></a>
+          </nav>
+          <div className="header-actions">
+          <ThemeControls />
           <Button
             variant="outline"
+            className="new-exam-button"
             disabled={!usable || pending > 0 || writing > 0}
             onClick={() => {
               if (
@@ -135,15 +142,34 @@ export function ExamApp() {
                   .catch(() => undefined);
             }}
           >
-            Yeni sınav
+            <Plus className="size-4" /> Yeni sınav
           </Button>
+          </div>
         </div>
       </header>
-      <div className="mx-auto max-w-7xl space-y-5 px-4 pt-5">
+      <div className="workspace-width workspace-body">
+        <section className="workspace-intro" aria-label="Sınav çalışma alanı">
+          <div>
+            <p className="eyebrow"><span /> SINAV ÇALIŞMA ALANI</p>
+            <h2>Kâğıttan veriye,<br /><span>bir akışta.</span></h2>
+            <a className="intro-link" href="#live-scan">Taramaya geç <ArrowDown className="size-4" /></a>
+          </div>
+          <div className="session-overview">
+            <div className="overview-heading"><span><Layers3 className="size-4" /> Bu oturum</span><span className={`connection-badge ${sync.connected ? "is-connected" : ""}`}><CircleDot className="size-3" />{sync.connected ? "Bağlı" : "Bağlanıyor"}</span></div>
+            <p className="overview-course">{session.courseName || "Yeni bir sınava hazır"}</p>
+            {session.courseCode && <p className="overview-caption">{session.courseCode}</p>}
+            <div className="overview-stats">
+              <div><strong>{session.rows.length.toString().padStart(2, "0")}</strong><span>Öğrenci kaydı</span></div>
+              <div><strong>{session.pcMap.length.toString().padStart(2, "0")}</strong><span>Soru</span></div>
+              <div><strong>{completed.toString().padStart(2, "0")}</strong><span>Okunan kâğıt</span></div>
+            </div>
+            <div className="overview-footer"><ShieldCheck className="size-4" /> Yerel kayıt</div>
+          </div>
+        </section>
         {storageError && (
           <div
             role="alert"
-            className="rounded-xl border border-red-300 bg-red-50 p-4 text-sm text-red-900"
+            className="rounded-xl border border-danger-border bg-danger-soft p-4 text-sm text-danger-text"
           >
             <p>{storageError}</p>
             {editable && (
@@ -164,9 +190,9 @@ export function ExamApp() {
         {!ready && !storageError && (
           <p role="status">Bilgisayardaki ortak tabloya bağlanılıyor…</p>
         )}
-        <Card>
+        <Card id="exam-setup" className="setup-card">
           <CardHeader>
-            <CardTitle>Sınav ve soru düzeni</CardTitle>
+            <CardTitle className="section-title"><span className="step-number">01</span><span>Sınavı hazırla</span></CardTitle>
           </CardHeader>
           <CardContent className="space-y-4">
             <div className="grid gap-4 sm:grid-cols-[1fr_2fr_1fr]">
@@ -220,9 +246,8 @@ export function ExamApp() {
                 />
               </div>
             </div>
-            <p className="text-sm text-slate-600">
-              Her sorunun PÇ türünü belirleyin (PÇ1–PÇ99). Soru sayısı ilk
-              kayıttan sonra korunur; farklı sınav için “Yeni sınav”.
+            <p className="text-sm text-muted-foreground" title="Soru sayısı ilk kayıttan sonra korunur. Farklı soru sayısı için yeni sınav başlatın.">
+              Soru / PÇ eşleşmesi <span className="text-muted-foreground">(PÇ1–PÇ99)</span>
             </p>
             <div className="flex flex-wrap gap-3">
               {session.pcMap.map((pc, i) => (
@@ -261,9 +286,9 @@ export function ExamApp() {
           </CardContent>
         </Card>
         <div className="grid gap-5 lg:grid-cols-[1.5fr_1fr]">
-          <Card className="scan-card border-0 text-white">
+          <Card id="live-scan" className="scan-card">
             <CardHeader>
-              <CardTitle>Kâğıdı kameraya tutun</CardTitle>
+              <CardTitle className="section-title"><span className="step-number">02</span><span>Kâğıdı kameraya tutun</span><span className="camera-badge"><span /> CANLI TARAMA</span></CardTitle>
             </CardHeader>
             <CardContent>
               <LiveCamera
@@ -275,7 +300,6 @@ export function ExamApp() {
                 <Button
                   variant="outline"
                   disabled={!usable || pending >= MAX_PENDING}
-                  className="border-white/20 bg-white/5 text-white hover:bg-white/10 hover:text-white"
                   onClick={() => {
                     replacement.current = null;
                     gallery.current?.click();
@@ -287,7 +311,6 @@ export function ExamApp() {
                 <Button
                   variant="ghost"
                   disabled={!usable}
-                  className="text-white hover:bg-white/10 hover:text-white"
                   onClick={manual}
                 >
                   <PencilLine className="size-4" />
@@ -299,7 +322,7 @@ export function ExamApp() {
                     aria-label="Okuma kontrolü"
                     value={mode}
                     onChange={(e) => setMode(e.target.value as CheckMode)}
-                    className="rounded border border-white/20 bg-slate-900 p-2"
+                    className="rounded-lg border border-input bg-muted p-2 text-foreground"
                   >
                     <option value="single">Tek · hızlı</option>
                     <option value="double">Çift · karşılaştırmalı</option>
@@ -336,12 +359,12 @@ export function ExamApp() {
               />
             </CardContent>
           </Card>
-          <Card>
+          <Card className="queue-card">
             <CardHeader>
-              <CardTitle>Okuma kuyruğu</CardTitle>
+              <CardTitle className="section-title queue-title"><span className="queue-heading-icon"><Layers3 className="size-5" /></span><span>Okuma kuyruğu</span></CardTitle>
             </CardHeader>
-            <CardContent className="space-y-4">
-              <div className="grid grid-cols-3 gap-2">
+            <CardContent className="queue-content">
+              <div className="queue-stats">
                 {[
                   ["Bekleyen", pending],
                   ["Okunan", completed],
@@ -350,14 +373,14 @@ export function ExamApp() {
                     session.rows.filter((row) => row.status === "error").length,
                   ],
                 ].map(([label, count]) => (
-                  <div key={label} className="rounded-xl bg-slate-50 p-3">
-                    <p className="text-xs text-slate-500">{label}</p>
-                    <p className="text-2xl font-bold">{count}</p>
+                  <div key={label} className="queue-stat">
+                    <p>{label}</p>
+                    <p>{count}</p>
                   </div>
                 ))}
               </div>
               <p
-                className={`rounded-xl border p-3 text-sm ${status?.ready ? "border-emerald-200 bg-emerald-50" : "border-amber-200 bg-amber-50"}`}
+                className={`queue-status rounded-xl border p-3 text-sm ${status?.ready ? "border-success-border bg-success-soft" : "border-warning-border bg-warning-soft"}`}
                 role="status"
               >
                 {status?.message || "Yerel okuyucu kontrol ediliyor…"}
@@ -365,20 +388,21 @@ export function ExamApp() {
               <Button
                 size="sm"
                 variant="outline"
+                className="queue-check"
                 onClick={() => void readerStatus().then(setStatus)}
               >
                 Okuyucuyu kontrol et
               </Button>
               {progress && (
                 <p
-                  className="flex items-start gap-2 rounded-xl bg-cyan-50 p-3 text-sm text-cyan-900"
+                  className="queue-progress flex items-start gap-2 rounded-xl bg-info-soft p-3 text-sm text-info-text"
                   role="status"
                 >
                   <LoaderCircle className="mt-0.5 size-4 shrink-0 animate-spin" />
                   {progress}
                 </p>
               )}
-              <div className="flex flex-wrap gap-2">
+              <div className="queue-actions">
                 <Button
                   variant="outline"
                   disabled={!usable}
@@ -396,43 +420,17 @@ export function ExamApp() {
                   Aktif okumayı iptal et
                 </Button>
               </div>
-              <p className="text-xs leading-5 text-slate-600">
-                Kamera açıkken model sırayla okur; aynı anda en fazla bir okuma
-                yapılır. Yeşil tikten sonra sonraki kâğıda geçebilirsiniz.
-                Görüntü önce bu cihaza kaydedilir, sonra bilgisayara aktarılır.
-                Aktarılan görüntülerin okunması telefon kapansa da sürer;
-                aktarılmamış görüntüler için bu sekmeyi açık tutun.
-              </p>
-              <div className="rounded-xl border border-blue-100 bg-blue-50 p-3 text-sm leading-6 text-blue-950">
-                1. Soru sayısı ve PÇ’leri ayarla.
-                <br />
-                2. Yeşil tikten sonra yeni kâğıda geç.
-                <br />
-                3. İstersen sarı hücreleri fotoğrafla karşılaştır; tabloda düzenle
-                veya satırı kontrol et.
-                <br />
-                4. Excel’i indir.
-              </div>
             </CardContent>
           </Card>
         </div>
-        <Card className="overflow-hidden">
+        <Card id="results" className="results-card overflow-hidden">
           <CardHeader className="flex flex-wrap flex-row items-center justify-between gap-3">
             <div>
-              <CardTitle>
-                Öğrenci sonuçları · {session.rows.length} satır
-              </CardTitle>
-              <p className="mt-2 text-xs text-slate-600">
-                Hücreler doğrudan düzenlenebilir.{" "}
-                <span className="rounded bg-amber-100 px-1 text-amber-900">
-                  Sarı: kontrol önerilir
-                </span>{" "}
-                ·{" "}
-                <span className="rounded bg-emerald-100 px-1 text-emerald-900">
-                  Yeşil: şüphe bildirilmedi / kontrol edildi
-                </span>
-                . Renkler doğruluk garantisi değildir.
-              </p>
+              <CardTitle className="section-title"><span className="step-number">03</span><span>Öğrenci sonuçları<small>{session.rows.length} kayıt</small></span></CardTitle>
+              <div className="results-legend" title="Hücreler doğrudan düzenlenebilir. Renkler doğruluk garantisi değildir.">
+                <span><i aria-hidden="true" />Kontrol önerilir</span>
+                <span><i aria-hidden="true" />Şüphe yok / kontrol edildi</span>
+              </div>
             </div>
             <Button
               onClick={() => {
@@ -454,14 +452,14 @@ export function ExamApp() {
           <CardContent className="p-0">
             <Table>
               <TableHeader>
-                <TableRow className="bg-slate-50">
+                <TableRow className="bg-muted">
                   <TableHead>Durum</TableHead>
                   <TableHead>Öğrenci no</TableHead>
                   <TableHead>Ad soyad</TableHead>
                   {session.pcMap.map((pc, i) => (
                     <TableHead key={i}>
                       S{i + 1}
-                      <span className="block text-xs text-slate-500">{pc}</span>
+                      <span className="block text-xs text-muted-foreground">{pc}</span>
                     </TableHead>
                   ))}
                   <TableHead>Yazılı toplam</TableHead>
@@ -474,10 +472,11 @@ export function ExamApp() {
                   <TableRow>
                     <TableCell
                       colSpan={session.pcMap.length + 6}
-                      className="h-24 text-center text-slate-500"
+                      className="empty-results text-center text-muted-foreground"
                     >
-                      Tablo hazır. Kâğıtlar tarandıkça satırlar burada
-                      görünecek.
+                      <div className="empty-results-icon"><FileSpreadsheet className="size-6" /></div>
+                      <p className="font-semibold text-foreground">İlk kâğıtla başlayın</p>
+                      <a href="#live-scan" className="empty-results-link">Tarama alanına geç <ArrowUpRight className="size-3.5" /></a>
                     </TableCell>
                   </TableRow>
                 )}
@@ -498,12 +497,12 @@ export function ExamApp() {
                         metadataWarnings(session, row).length > 0 &&
                         row.metadataApproval !==
                           metadataSignature(session, row) && (
-                          <p className="mt-1 text-amber-700">
+                          <p className="mt-1 text-warning-text">
                             Ders / PÇ kontrolü
                           </p>
                         )}
                       {row.error && (
-                        <p className="mt-1 text-red-700">{row.error}</p>
+                        <p className="mt-1 text-danger-text">{row.error}</p>
                       )}
                       {row.draft.elapsedMs && (
                         <p>{(row.draft.elapsedMs / 1000).toFixed(1)} sn</p>
@@ -584,21 +583,22 @@ export function ExamApp() {
           </CardContent>
           {issues.length > 0 && (
             <p
-              className="border-t bg-amber-50 p-3 text-sm text-amber-900"
+              className="border-t bg-warning-soft p-3 text-sm text-warning-text"
               role="status"
             >
-              {issues.length} satır/ayar için kontrol önerilir.{" "}
-              {issues[0]} Kontrol isteğe bağlıdır; Excel’i istediğiniz zaman
-              mevcut tabloyla indirebilirsiniz.
+              {issues.length} satır/ayar için kontrol önerilir. {issues[0]}
             </p>
           )}
         </Card>
-        <p className="text-xs leading-5 text-slate-500">
+        <details className="workspace-footnote text-xs leading-5 text-muted-foreground">
+          <summary>Oturum ve veri saklama</summary>
+          <p>
           Ortak tablo ve aktarılan kaynak fotoğraflar bilgisayarda saklanır.
           Telefon ve bilgisayar değişiklikleri yaklaşık bir saniyede görür.
           Excel’i almadan “Yeni sınav”ı kullanmayın; bu işlem tüm cihazlardaki
           ortak tabloyu temizler. Kamera için telefonda HTTPS gerekir.
-        </p>
+          </p>
+        </details>
       </div>
       <Dialog
         open={Boolean(selectedRow)}
@@ -616,22 +616,22 @@ export function ExamApp() {
           {selectedRow && (
             <>
               <div className="flex min-h-0 flex-col overflow-hidden lg:grid lg:grid-cols-[minmax(0,1.3fr)_minmax(0,1fr)]">
-                <section aria-label="Kaynak fotoğraf" className="shrink-0 border-b bg-slate-50 p-3 lg:overflow-y-auto lg:border-b-0 lg:border-r lg:p-4">
+                <section aria-label="Kaynak fotoğraf" className="shrink-0 border-b bg-muted p-3 lg:overflow-y-auto lg:border-b-0 lg:border-r lg:p-4">
                   <div className="mb-2 flex items-center justify-between gap-2">
                     <h3 className="text-sm font-semibold">Kaynak fotoğraf</h3>
-                    {photoUrl && <Button variant="outline" size="sm" className="h-8 bg-white" aria-pressed={photoZoom}
+                    {photoUrl && <Button variant="outline" size="sm" className="h-8 bg-card" aria-pressed={photoZoom}
                       onClick={() => setZoomedPhoto(photoZoom ? null : selected)}>
                       {photoZoom ? <ZoomOut className="size-4" /> : <ZoomIn className="size-4" />}
                       {photoZoom ? "Sığdır" : "Büyüt"}
                     </Button>}
                   </div>
                   {photoUrl ? (
-                    <div className="max-h-[30dvh] overflow-auto rounded-lg border bg-white lg:max-h-[65dvh]" tabIndex={0} aria-label="Fotoğraf görünümü; büyütüldüğünde kaydırabilirsiniz">
+                    <div className="max-h-[30dvh] overflow-auto rounded-lg border bg-card lg:max-h-[65dvh]" tabIndex={0} aria-label="Fotoğraf görünümü; büyütüldüğünde kaydırabilirsiniz">
                       <img src={photoUrl} alt="Bu satırın kaynak sınav kâğıdı"
                         className={photoZoom ? "block w-[180%] max-w-none" : "mx-auto block max-h-[30dvh] w-full object-contain lg:max-h-none"} />
                     </div>
                   ) : (
-                    <p className="py-6 text-sm text-slate-500">
+                    <p className="py-6 text-sm text-muted-foreground">
                       {selectedRow.hasPhoto ? "Kaynak görüntü yükleniyor / bulunamadı." : "Elle girilen satır; kaynak fotoğraf yok."}
                     </p>
                   )}
@@ -643,35 +643,35 @@ export function ExamApp() {
                     {reviewField("studentNumber")}
                   </div>
                   <div className="border-t pt-3">
-                    <h4 className="mb-3 text-xs font-semibold text-slate-500">Puanlar · kâğıttaki sırayla</h4>
+                    <h4 className="mb-3 text-xs font-semibold text-muted-foreground">Puanlar · kâğıttaki sırayla</h4>
                     <div className="grid gap-2" style={{ gridTemplateColumns: `repeat(${Math.min(session.pcMap.length, 5)}, minmax(0, 1fr))` }}>
                       {cellKeys(session.pcMap.length).filter(key => /^s\d+$/.test(key)).map(reviewField)}
                     </div>
                   </div>
-                  <div className="grid grid-cols-2 gap-3 rounded-lg border bg-slate-50 p-3">
+                  <div className="grid grid-cols-2 gap-3 rounded-lg border bg-muted p-3">
                     {reviewField("writtenTotal")}
                     <div className="space-y-1.5">
-                      <p className="text-xs font-medium text-slate-600">Hesaplanan toplam</p>
+                      <p className="text-xs font-medium text-muted-foreground">Hesaplanan toplam</p>
                       <p className="flex h-10 items-center px-3 text-lg font-semibold tabular-nums">{sumScores(selectedRow.draft.scores) ?? "—"}</p>
                     </div>
                   </div>
-                  {approvalProblem && <p role="alert" className="rounded-lg bg-amber-50 p-3 text-xs leading-5 text-amber-900">{approvalProblem}</p>}
-                  {totalMismatch && <p className="rounded-lg bg-amber-50 p-3 text-xs leading-5 text-amber-900">Yazılı toplam ({selectedRow.draft.writtenTotal}) ve puan toplamı ({scoreSum}) farklı. Puanları ve toplamı fotoğrafla karşılaştırın.</p>}
+                  {approvalProblem && <p role="alert" className="rounded-lg bg-warning-soft p-3 text-xs leading-5 text-warning-text">{approvalProblem}</p>}
+                  {totalMismatch && <p className="rounded-lg bg-warning-soft p-3 text-xs leading-5 text-warning-text">Yazılı toplam ({selectedRow.draft.writtenTotal}) ve puan toplamı ({scoreSum}) farklı. Puanları ve toplamı fotoğrafla karşılaştırın.</p>}
                   {!!metadataReview.length && (
-                    <div className="rounded-lg bg-amber-50 p-3 text-xs leading-5 text-amber-900">
+                    <div className="rounded-lg bg-warning-soft p-3 text-xs leading-5 text-warning-text">
                       <p className="font-medium">Ders / PÇ bilgilerini fotoğrafla karşılaştırın.</p>
                       <ul className="mt-1 space-y-1">{metadataReview.map(warning => <li key={warning}>{warning}</li>)}</ul>
                     </div>
                   )}
                   {!!readingDetails.length && (
-                    <details className="text-xs leading-5 text-slate-500">
+                    <details className="text-xs leading-5 text-muted-foreground">
                       <summary className="cursor-pointer">Okuma ayrıntıları</summary>
                       <ul className="mt-2 space-y-2">{readingDetails.map(detail => <li key={detail}>{detail}</li>)}</ul>
                     </details>
                   )}
                 </section>
               </div>
-              <div className="flex shrink-0 flex-wrap justify-end gap-2 border-t bg-white px-4 py-3">
+              <div className="flex shrink-0 flex-wrap justify-end gap-2 border-t bg-card px-4 py-3">
               {selectedRow.status === "error" && (
                 <Button
                   variant="outline"
@@ -722,6 +722,7 @@ function EditableCell({
   return (
     <div className="relative">
       <Input
+        data-review-color={state.color}
         id={compact ? `review-${row.id}-${field}` : undefined}
         aria-label={`${row.id} ${field}`}
         title={state.reason}
@@ -735,17 +736,17 @@ function EditableCell({
               : "decimal"
         }
         onChange={(e) => onEdit(e.target.value)}
-        className={`${compact ? "min-w-0" : field === "fullName" ? "min-w-48" : field === "studentNumber" ? "min-w-36" : "min-w-20"} ${field === "studentNumber" ? "font-mono" : ""} ${compactNumber ? "px-1 text-center text-base font-semibold tabular-nums" : "pr-6"} ${state.color === "yellow" ? "border-amber-300 bg-amber-50" : state.color === "green" ? "border-emerald-200 bg-emerald-50" : "bg-slate-50"}`}
+        className={`review-cell ${compact ? "min-w-0" : field === "fullName" ? "min-w-48" : field === "studentNumber" ? "min-w-36" : "min-w-20"} ${field === "studentNumber" ? "font-mono" : ""} ${compactNumber ? "px-1 text-center text-base font-semibold tabular-nums" : "pr-6"} ${state.color === "yellow" ? "border-warning-border bg-warning-soft" : state.color === "green" ? "border-success-border bg-success-soft" : "bg-muted"}`}
       />
       {state.color === "yellow" && !compactNumber ? (
         <AlertTriangle
           aria-label={state.reason}
-          className="pointer-events-none absolute right-2 top-3 size-3 text-amber-600"
+          className="pointer-events-none absolute right-2 top-3 size-3 text-warning-text"
         />
       ) : state.color === "green" && !compactNumber ? (
         <CheckCircle2
           aria-label={state.reason}
-          className="pointer-events-none absolute right-2 top-3 size-3 text-emerald-600"
+          className="pointer-events-none absolute right-2 top-3 size-3 text-success-text"
         />
       ) : null}
     </div>

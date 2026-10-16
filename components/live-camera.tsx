@@ -1,6 +1,6 @@
 "use client";
 import { useEffect, useRef, useState } from "react";
-import { Camera, CheckCircle2, RotateCcw } from "lucide-react";
+import { Camera, CheckCircle2, RotateCcw, ScanLine } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
   CAPTURE_INTERVAL_MS,
@@ -252,7 +252,7 @@ export function LiveCamera({
     <div className="space-y-3">
       <div className="flex flex-wrap items-center gap-2">
         <Button
-          className="bg-cyan-300 text-slate-950 hover:bg-cyan-200"
+          className="camera-toggle"
           disabled={!enabled && !active}
           onClick={() => setActive(!active)}
         >
@@ -264,7 +264,7 @@ export function LiveCamera({
             aria-label="Kamera seçimi"
             value={device}
             onChange={(e) => setDevice(e.target.value)}
-            className="min-w-0 max-w-full rounded-lg border border-white/30 bg-slate-900 px-2 py-2 text-sm"
+            className="min-w-0 max-w-full rounded-lg border border-input bg-muted px-2 py-2 text-sm text-foreground"
           >
             <option value="">Otomatik kamera</option>
             {devices.map((item, i) => (
@@ -277,7 +277,6 @@ export function LiveCamera({
         {active && (
           <Button
             variant="ghost"
-            className="text-white hover:bg-white/10 hover:text-white"
             onClick={() => gate.current.reset()}
           >
             <RotateCcw className="size-4" />
@@ -285,7 +284,7 @@ export function LiveCamera({
           </Button>
         )}
       </div>
-      <div className="relative aspect-[5/3] overflow-hidden rounded-xl border border-cyan-200/50 bg-slate-950">
+      <div className={`camera-preview relative aspect-[5/3] overflow-hidden rounded-xl ${active ? "is-active" : ""}`}>
         <video
           ref={videoRef}
           autoPlay
@@ -293,18 +292,18 @@ export function LiveCamera({
           playsInline
           className={`size-full object-cover ${active ? "" : "invisible"}`}
         />
-        <div className="pointer-events-none absolute inset-[3%] rounded-lg border-2 border-cyan-300/70" />
+        <div className="camera-outline pointer-events-none absolute inset-[3%] rounded-lg border"><i className="corner corner-tl" /><i className="corner corner-tr" /><i className="corner corner-bl" /><i className="corner corner-br" /></div>
         {!active && (
-          <div className="absolute inset-0 grid place-items-center text-center text-slate-300">
-            <div>
-              <Camera className="mx-auto mb-2 size-9" />
+          <div className="absolute inset-0 grid place-items-center text-center">
+            <div className="camera-idle">
+              <div className="camera-idle-icon"><ScanLine className="size-7" /></div>
               <p>Üst form ve puan tablosu</p>
             </div>
           </div>
         )}
         {flash && active && (
-          <div className="absolute inset-0 grid place-items-center bg-emerald-950/35">
-            <div className="rounded-2xl bg-emerald-600 p-5 text-center">
+          <div className="capture-flash absolute inset-0 grid place-items-center">
+            <div className="capture-confirmation rounded-2xl p-5 text-center">
               <CheckCircle2 className="mx-auto size-12" />
               <p className="mt-2 font-semibold">Görüntü kaydedildi</p>
             </div>
@@ -312,19 +311,22 @@ export function LiveCamera({
         )}
       </div>
       <p
-        className="min-h-10 text-sm text-cyan-100"
+        className="camera-message min-h-10 text-sm"
         role="status"
         aria-live="polite"
       >
         {message}
       </p>
-      <p className="text-xs leading-5 text-slate-300">
+      <details className="camera-hint text-xs leading-5">
+        <summary>Tarama ipuçları</summary>
+        <p>
         Yeşil tik görüntünün bu cihaza kaydedildiğini belirtir, okuma sonucu
         değildir. Aktarım bilgisayara arka planda yapılır. Kâğıdı tamamen
         çıkarıp yenisini tutun; üst üste değiştiriyorsanız “Sonraki kâğıda
         hazırla”yı kullanın. Soru sayısı / şablon eşleşmezse otomatik
         yakalanmaz.
-      </p>
+        </p>
+      </details>
     </div>
   );
 }

@@ -1,8 +1,9 @@
 import type { Metadata } from "next";
 import "./globals.css";
+import { AppThemeProvider } from "@/components/theme-controls";
 
 export const metadata: Metadata = {
-  title: "Sınav Tarayıcı",
+  title: "Scan Exam",
   description: "Sınav kâğıtlarının üst bölümünü okuyup kontrollü biçimde Excel'e aktaran mobil uygulama.",
   icons: {
     icon: "/favicon.svg",
@@ -16,8 +17,8 @@ export default function RootLayout({
   children: React.ReactNode;
 }>) {
   return (
-    <html lang="tr">
-      <body className="antialiased">{children}</body>
+    <html lang="tr" suppressHydrationWarning>
+      <body className="antialiased"><AppThemeProvider>{children}</AppThemeProvider></body>
     </html>
   );
 }
