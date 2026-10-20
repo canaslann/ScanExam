@@ -73,10 +73,10 @@ test("production tries a third padded name crop only when an empty name remains 
     const value = image === "name-labelled" ? "Nişan Koç" : "Nisa Koç";
     return Response.json({ done: true, message: { content: JSON.stringify({ value }) } });
   };
-  const result = await readLocalPaper("full", "single", new AbortController().signal, undefined, undefined, 1,
+  const result = await readLocalPaper("full", "double", new AbortController().signal, undefined, undefined, 1,
     { ...paper, identity: { ...paper.identity, fullNamePadded: "name-padded" } });
   assert.equal(result.fullName, "Nisa Koç");
-  assert.deepEqual(images, ["name-zoom", "name-labelled", "name-padded"]);
+  assert.deepEqual(images, ["name-zoom", "name-labelled", "name-padded", "name-zoom", "name-labelled", "name-padded"]);
   assert.deepEqual(result.scores, ["10"]);
   assert.equal(result.studentNumber, "00001234567");
 });
@@ -93,7 +93,7 @@ test("a failed third name crop retains the completed alternatives and scores", a
     if (image === "name-padded") throw new Error("optional offline");
     return Response.json({ done: true, message: { content: JSON.stringify({ value: image === "name-labelled" ? "Nişan Koç" : "Nisa Koç" }) } });
   };
-  const result = await readLocalPaper("full", "single", new AbortController().signal, undefined, undefined, 1,
+  const result = await readLocalPaper("full", "double", new AbortController().signal, undefined, undefined, 1,
     { ...paper, identity: { ...paper.identity, fullNamePadded: "name-padded" } });
   assert.equal(result.fullName, "");
   assert.ok(result.alternatives.fullName.includes("Nisa Koç"));
@@ -109,7 +109,7 @@ const native = input => input.images[0] === "scores"
   : input.images[0] === "course" ? "DERS101 ÖRNEK DERS"
   : input.images[0].startsWith("name") ? "Nisa koq" : "00001234567";
 
-test("startup prepares both installed models with the same small-memory profile and tolerates optional failure", async t => {
+test("startup prepares both field readers with matching request profiles; optional failure preserves OCR", async t => {
   const originalFetch = globalThis.fetch, originalModel = process.env.SCANEXAM_MODEL;
   t.after(() => { globalThis.fetch = originalFetch; if (originalModel === undefined) delete process.env.SCANEXAM_MODEL; else process.env.SCANEXAM_MODEL = originalModel; });
   process.env.SCANEXAM_MODEL = "glm-ocr-eot:q8_0";
@@ -121,7 +121,7 @@ test("startup prepares both installed models with the same small-memory profile 
       const input = JSON.parse(options.body); loads.push(input);
       assert.equal(input.images, undefined); assert.equal(input.prompt, undefined);
       if (input.model === "qwen3.5:4b") {
-        assert.deepEqual(input.options, { temperature: 0, num_ctx: 2048, num_gpu: 8 });
+        assert.deepEqual(input.options, { temperature: 0, num_ctx: 2048, num_gpu: 8, num_thread: 4 });
         if (fail) throw new Error("optional load failed");
       }
       return Response.json({ done: true });
@@ -150,11 +150,11 @@ test("production uses an installed local secondary reader only for names, keepin
     const value = input.messages[0].images[0] === "name-zoom" ? "Nisa Koç" : "Nişan Koç";
     return Response.json({ done: true, done_reason: "stop", message: { content: JSON.stringify({ value }) } });
   };
-  const result = await readLocalPaper("full", "single", new AbortController().signal, undefined, undefined, 1, paper);
+  const result = await readLocalPaper("full", "double", new AbortController().signal, undefined, undefined, 1, paper);
   assert.equal(result.fullName, "Nisa Koç");
   assert.deepEqual(result.scores, ["10"]); assert.equal(result.writtenTotal, "10");
   assert.equal(result.studentNumber, "00001234567");
-  assert.equal(requests.filter(r => r.url.endsWith("/api/chat")).length, 2);
+  assert.equal(requests.filter(r => r.url.endsWith("/api/chat")).length, 4);
   assert.ok(result.reviewFields.includes("fullName"));
   assert.ok(result.alternatives.fullName.includes("Nisa koq"));
 });
@@ -173,10 +173,10 @@ test("missing, failed or incomplete optional readers retain completed GLM result
       if (failure === "network") throw new Error("offline");
       return Response.json({ done: true, done_reason: failure === "length" ? "length" : "stop", message: { content: "invalid JSON" } });
     };
-    const result = await readLocalPaper("full", "single", new AbortController().signal, undefined, undefined, 1, paper);
+    const result = await readLocalPaper("full", "double", new AbortController().signal, undefined, undefined, 1, paper);
     assert.equal(result.fullName, "Nisa koq"); assert.deepEqual(result.scores, ["10"]);
     assert.equal(result.writtenTotal, "10"); assert.equal(result.studentNumber, "00001234567");
-    assert.equal(chats, failure === "missing" ? 0 : 1);
+    assert.equal(chats, failure === "missing" ? 0 : 2);
     assert.ok(result.warnings.some(warning => warning.includes("Ek isim kontrol")));
   }
   const controller = new AbortController();
@@ -185,7 +185,7 @@ test("missing, failed or incomplete optional readers retain completed GLM result
     controller.abort();
     return Response.json({ models: [{ name: "qwen3.5:4b" }] });
   };
-  await assert.rejects(readLocalPaper("full", "single", controller.signal, undefined, undefined, 1, paper), error => error.status === 504);
+  await assert.rejects(readLocalPaper("full", "double", controller.signal, undefined, undefined, 1, paper), error => error.status === 504);
 });
 
 test("name plausibility triggers visual Emre selection without supplying the expected correction or changing surname/scores", async t => {
@@ -212,9 +212,9 @@ test("name plausibility triggers visual Emre selection without supplying the exp
     const value = message.images[0] === "name-zoom" ? "Yunus Emre Güngör" : "Yunus Emre Günçör";
     return Response.json({ done: true, message: { content: JSON.stringify({ value }) } });
   };
-  const result = await readLocalPaper("full", "single", new AbortController().signal, undefined, undefined, 1, paper);
+  const result = await readLocalPaper("full", "double", new AbortController().signal, undefined, undefined, 1, paper);
   assert.equal(result.fullName, "Yunus Emre Güngör");
-  assert.equal(assessments, 1); assert.equal(visualReads, 2);
+  assert.equal(assessments, 2); assert.equal(visualReads, 4);
   assert.deepEqual(result.scores, ["10"]); assert.equal(result.writtenTotal, "10");
   assert.equal(result.studentNumber, "00001234567");
   assert.ok(result.alternatives.fullName.includes("Yunus Enre Güngör"));
@@ -235,8 +235,8 @@ test("a plausible common name keeps native OCR and skips additional image reads;
       assert.equal(input.messages[0].images, undefined);
       return Response.json({ done: true, message: { content: JSON.stringify(assessment) } });
     };
-    const result = await readLocalPaper("full", "single", new AbortController().signal, undefined, undefined, 1, paper);
+    const result = await readLocalPaper("full", "double", new AbortController().signal, undefined, undefined, 1, paper);
     assert.equal(result.fullName, "Recep Erdoğan");
-    assert.deepEqual(result.scores, ["10"]); assert.equal(chats, 1);
+    assert.deepEqual(result.scores, ["10"]); assert.equal(chats, 2);
   }
 });

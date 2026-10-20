@@ -122,10 +122,23 @@ test("production uses the installed checker only for a disagreeing excessive sco
         : image === "cell-2" ? "14" : image === "padded-2" ? "74" : image === "course" ? "DERS101 ÖRNEK DERS" : image === "name" ? "Örnek Öğrenci" : "00001234567";
       return Response.json({ done: true, response });
     };
-    const result = await readLocalPaper("full", "single", new AbortController().signal, undefined, undefined, 5, paper);
-    assert.equal(scoreChecks, 1);
+    const result = await readLocalPaper("full", "double", new AbortController().signal, undefined, undefined, 5, paper);
+    assert.equal(scoreChecks, 2);
     assert.deepEqual(result.scores, fail ? original : ["20", "20", "14", "18", "9"]);
     assert.equal(result.writtenTotal, "87", "scores cannot invent the handwritten total");
     assert.equal(result.studentNumber, "00001234567");
   }
+});
+
+
+test("a complete independent row check skips matching cell requests but disagreements retain visual verification", async () => {
+  const first = ["13", "1", "7", "8", "9"];
+  const agreed = await refineConfusableScores(first, cells(5), async () => assert.fail("matching row needs no per-cell request"), undefined, [...first]);
+  assert.deepEqual(agreed.scores, first);
+  const calls = [];
+  const result = await refineConfusableScores(first, cells(5), async image => { calls.push(image); return "17"; }, async () => "17", ["17", "1", "7", "8", "9"]);
+  assert.deepEqual(result.scores, ["17", "1", "7", "8", "9"]);
+  assert.deepEqual(calls, ["cell-0", "padded-0"]);
+  const unsupported = await refineConfusableScores(first, cells(5), async () => "17", undefined, ["17", "1", "7", "8", "9"]);
+  assert.deepEqual(unsupported.scores, first, "row disagreement alone must not rewrite a grade");
 });

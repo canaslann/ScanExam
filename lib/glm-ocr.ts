@@ -37,7 +37,7 @@ function tableRows(raw: string): string[][] {
     line.trim().replace(/^\||\|$/g, "").split("|").map(cell => cell.trim()),
   ).filter(row => !row.every(cell => /^[\s:-]*$/.test(cell)));
 }
-export function parseGlmScores(raw: string, count: number) {
+export function parseGlmScores(raw: string, count: number, measuredGrid = false) {
   const rows = tableRows(raw);
   const header = rows.find(row => row.some(cell => /\(?S\d+\)?\s*[-–]?\s*P\s*[ÇC]/iu.test(cell)));
   let scoreRow = rows.find(row => /^Puan\s*:?$/iu.test(row[0] || ""));
@@ -53,8 +53,8 @@ export function parseGlmScores(raw: string, count: number) {
   // Observed OCR typos in the printed Puan label must not discard correctly
   // transcribed handwriting. Recover only the uniquely labelled row directly
   // below a complete, ordered question header; never infer digits or columns.
-  if (!scoreRow && header && pcMap.every(Boolean)) {
-    const candidates = rows.filter(row => /^(?:Poan|Punan)\s*:?$/iu.test(row[0] || ""));
+  if (!scoreRow && header && (pcMap.every(Boolean) || (measuredGrid && header.length === count + 1))) {
+    const candidates = rows.filter(row => /^(?:Poan|Punan|Pam|Pun)\s*:?$/iu.test(row[0] || ""));
     const candidate = candidates.length === 1 ? candidates[0] : undefined;
     if (candidate && rows.indexOf(candidate) === rows.indexOf(header) + 1 && candidate.length === count + 1)
       scoreRow = candidate;
@@ -71,22 +71,105 @@ export function parseGlmCourse(raw: string) {
   return { courseCode: match?.[1].replace(/\s/g, "") || "", courseName: match?.[2] || "" };
 }
 
+/** Read the model's literal document transcription without requiring fixed crop coordinates. */
+export function parseGlmDocument(raw: string, count: number): ScanOutput {
+  const lines = ocrText(raw.replace(/<\/t[dh]\s*>/gi, "\n")).split(/\r?\n/)
+    .map(line => line.replace(/^[#*\s]+|[*\s]+$/g, "").trim()).filter(Boolean);
+  const alternatives: Record<string, string[]> = {};
+  const field = (label: RegExp, key: string) => {
+    const candidates = lines.flatMap((line, i) => {
+      const match = line.match(label);
+      if (!match) return [];
+      const value = line.slice(match[0].length).trim() || lines[i + 1] || "";
+      return [value.replace(/\s+(?:İmza|Imza|Numarası|Numarasi)\b.*$/iu, "").trim()];
+    }).filter(Boolean);
+    const unique = [...new Set(candidates)];
+    if (unique.length) alternatives[key] = unique;
+    return unique.length === 1 ? unique[0] : "";
+  };
+  const name = field(/^Ad[ıi]\s+S\S*\s*[:：]?\s*/iu, "fullName");
+  const number = field(/^(?:Ö[ğg]renci\s*)?Numara(?:s[ıi]|r)?\s*[:：]?\s*/iu, "studentNumber").replace(/\s+/g, "");
+  const course = parseGlmCourse(field(/^Dersin\s+Kodu\s+ve\s+Ad[ıi]\s*[:：]?\s*/iu, "course"));
+  const numbers = parseGlmScores(raw, count);
+  // Text Recognition can emit plain lines instead of HTML/Markdown tables.
+  // Accept exactly one explicitly labelled row with exactly the configured
+  // number of literal tokens. Never pad missing columns or shift question IDs.
+  const orderedHeaders = [...ocrText(raw).matchAll(/\(?S(\d+)\)?\s*[-–]?\s*P\s*[ÇC]\s*(\d{1,2})/giu)];
+  const hasOrderedHeaders = orderedHeaders.length === count
+    && orderedHeaders.every((match, i) => Number(match[1]) === i + 1 && Number(match[2]) > 0);
+  const scoreLabel = hasOrderedHeaders ? /^P(?:uan|oan|unan)(?:\s*[:：]|\s|$)/iu : /^Puan(?:\s*[:：]|\s|$)/iu;
+  const scoreStarts = lines.flatMap((line, i) => scoreLabel.test(line) ? [i] : []);
+  if (numbers.scores.every(value => !value) && scoreStarts.length === 1) {
+    const start = scoreStarts[0];
+    const end = lines.findIndex((line, i) => i > start && /^Not\b\s*[:：]?/iu.test(line));
+    if (end > start) {
+      const tokens = [lines[start].replace(/^P(?:uan|oan|unan)\s*[:：]?\s*/iu, ""), ...lines.slice(start + 1, end)]
+        .join(" ").trim().split(/\s+/).filter(Boolean);
+      if (tokens.length === count) numbers.scores = tokens;
+    }
+  }
+  const totals = lines.flatMap((line, i) => {
+    const match = line.match(/^Not\s*[:：]?\s*/iu);
+    return match ? [line.slice(match[0].length).trim() || lines[i + 1] || ""] : [];
+  });
+  if (!numbers.writtenTotal && totals.length === 1) numbers.writtenTotal = totals[0];
+  if (numbers.pcMap.some(value => !value)) {
+    const headers = [...ocrText(raw).matchAll(/\(?S(\d+)\)?\s*[-–]?\s*P\s*[ÇC]\s*(\d{1,2})/giu)];
+    if (headers.length === count && headers.every((match, i) => Number(match[1]) === i + 1 && Number(match[2]) > 0))
+      numbers.pcMap = headers.map(match => `PÇ${Number(match[2])}`);
+  }
+  const cleanNumber = (value: string, key: string) => {
+    if (parseScore(value) !== null) return value;
+    if (value) alternatives[key] = [value];
+    // A faint erased total and its darker rewrite can be transcribed twice.
+    // Keep an identical multi-digit literal once, with the original as an
+    // alternative for review. Different values and separated single digits
+    // remain ambiguous; never choose by the sum of question scores.
+    if (key === "writtenTotal") {
+      const repeated = value.trim().split(/\s+/);
+      if (repeated.length > 1 && /^\d{2,3}$/.test(repeated[0])
+        && repeated.every(token => token === repeated[0]) && parseScore(repeated[0]) !== null)
+        return repeated[0];
+    }
+    return "";
+  };
+  const output = normalizePaper({
+    fullName: validIdentity(name, "fullName") ? name : "",
+    studentNumber: validIdentity(number, "studentNumber") ? number : "",
+    ...course, pcMap: numbers.pcMap,
+    scores: numbers.scores.map((value, i) => cleanNumber(value, `s${i + 1}`)),
+    writtenTotal: cleanNumber(numbers.writtenTotal, "writtenTotal"),
+    uncertainFields: ["fullName", "studentNumber", "writtenTotal", ...Array.from({ length: count }, (_, i) => `s${i + 1}`)],
+  }, count);
+  return { ...output, alternatives, readingStrategy: "full-table", warnings: [...(output.warnings || []),
+    "Serbest fotoğraf: alanlar tam sayfa okumasından bulundu. Sabit hücre kırpımıyla ek kontrol yapılamadı; sonuçları kaynak fotoğrafla karşılaştırın."] };
+}
+
 /** Native OCR has no calibrated field confidence. Keep genuine crop disagreements. */
 export async function readGlmRegions(
   paper: PreparedPaper,
   count: number,
-  read: (image: string, prompt: "Text Recognition:" | "Table Recognition:") => Promise<string>,
+  read: (image: string, prompt: "Text Recognition:" | "Table Recognition:", maxTokens?: number) => Promise<string>,
   verifyScore?: (image: string) => Promise<string>,
+  detailed = true,
 ): Promise<ScanOutput> {
   if (!paper.regions || !paper.identity)
-    throw new Error("Üst formun tamamı algılanamadı. Üst form ve Puan / Not tablosunu hizalayıp yeniden tarayın.");
-  const numbers = parseGlmScores(await read(paper.regions.scores, "Table Recognition:"), count);
+    return parseGlmDocument(await read(paper.documentImage || paper.image, "Text Recognition:", Math.max(1800, count * 70 + 900)), count);
+  let tableText = "";
+  try { tableText = await read(paper.regions.scores, "Table Recognition:"); }
+  catch (error) {
+    if (!error || typeof error !== "object" || !("status" in error) || error.status !== 502) throw error;
+    // A malformed/truncated table can still yield usable positional cells.
+    // Connection failures and cancellation must continue to stop the job.
+  }
+  const numbers = parseGlmScores(tableText, count);
   const uncertain = new Set(numbers.uncertainFields);
   const alternatives: Record<string, string[]> = {};
-  const textRead = async (image: string, field: "fullName" | "studentNumber" | "writtenTotal") => {
+  const textRead = async (image: string, field: "fullName" | "studentNumber" | "writtenTotal" | `s${number}`) => {
     try {
       const raw = await read(image, "Text Recognition:");
-      return field === "writtenTotal" ? ocrText(raw).replace(/^Not\s*:\s*/iu, "").trim() : identityText(raw, field);
+      return field === "fullName" || field === "studentNumber" ? identityText(raw, field)
+        : ocrText(raw).replace(/^(?:Not|Puan)\s*:\s*/iu, "").trim();
     }
     catch (error) {
       // A truncated text field must not discard already completed score cells.
@@ -95,15 +178,57 @@ export async function readGlmRegions(
       uncertain.add(field); return "";
     }
   };
+  let rowReadings: string[] | undefined;
+  const incompleteScores = numbers.scores.some(value => parseScore(value) === null);
+  if (paper.scoreRowImage && (detailed || incompleteScores) && (sumScores(numbers.scores) ?? 0) <= 100) {
+    try {
+      const row = ocrText(await read(paper.scoreRowImage, "Text Recognition:", Math.max(64, count * 10)))
+        .replace(/^Puan\s*:?\s*/iu, "").trim().split(/[|\s]+/).filter(Boolean);
+      if (row.length === count && row.every(value => parseScore(value) !== null)) rowReadings = row;
+    } catch (error) {
+      if (!error || typeof error !== "object" || !("status" in error) || error.status !== 502) throw error;
+    }
+  }
+  // An exact, positional row can recover missing table cells. Never shift a
+  // shorter row into place or replace a valid primary score without evidence.
+  if (rowReadings && incompleteScores) {
+    numbers.scores = numbers.scores.map((value, i) => {
+      if (parseScore(value) !== null) return value;
+      const key = `s${i + 1}`;
+      uncertain.add(key);
+      alternatives[key] = [...new Set([value, rowReadings![i]].filter(Boolean))];
+      return rowReadings![i];
+    });
+  }
+  if (incompleteScores && paper.scoreCells?.length === count) {
+    for (let i = 0; i < count; i++) {
+      if (parseScore(numbers.scores[i]) !== null) continue;
+      const key = `s${i + 1}`;
+      const candidates = [numbers.scores[i]];
+      for (const image of [paper.scoreCells[i].color, paper.scoreCells[i].padded]) {
+        const candidate = await textRead(image, `s${i + 1}`);
+        candidates.push(candidate);
+        if (parseScore(candidate) !== null) { numbers.scores[i] = candidate; break; }
+      }
+      if (!detailed && !numbers.scores[i])
+        numbers.scores[i] = candidates.find(value => /\d/.test(value) && value.length <= 20) || "";
+      uncertain.add(key);
+      alternatives[key] = [...new Set(candidates.filter(Boolean))];
+    }
+  }
+  const consistentTotal = parseScore(numbers.writtenTotal) !== null
+    && sumScores(numbers.scores) === parseScore(numbers.writtenTotal);
   const refineScores = (sumScores(numbers.scores) ?? 0) > 100 ? refineExcessScores : refineConfusableScores;
-  const scoreCheck = await refineScores(numbers.scores, paper.scoreCells,
+  const scoreCheck = detailed
+    ? await refineScores(numbers.scores, paper.scoreCells,
     async image => {
       try { return ocrText(await read(image, "Text Recognition:")).trim(); }
       catch (error) {
         if (error && typeof error === "object" && "status" in error && error.status === 502) return "";
         throw error;
       }
-    }, verifyScore);
+    }, verifyScore, consistentTotal ? rowReadings : undefined)
+    : { scores: numbers.scores, alternatives: {}, reviewFields: [], warnings: [] };
   numbers.scores = scoreCheck.scores;
   Object.assign(alternatives, scoreCheck.alternatives);
   scoreCheck.reviewFields.forEach(field => uncertain.add(field));
@@ -112,7 +237,7 @@ export async function readGlmRegions(
   const firstTotal = parseScore(numbers.writtenTotal);
   const scoreSum = sumScores(numbers.scores);
   const mismatchedTotal = firstTotal !== null && scoreSum !== null && Math.abs(firstTotal - scoreSum) > 0.001;
-  if ((firstTotal === null || mismatchedTotal) && paper.totalImage) {
+  if ((firstTotal === null || (detailed && mismatchedTotal)) && paper.totalImage) {
     uncertain.add("writtenTotal");
     const candidates = [numbers.writtenTotal];
     let candidate = await textRead(paper.totalImage, "writtenTotal");
@@ -128,12 +253,14 @@ export async function readGlmRegions(
   // Zoom preserves color/strokes; it adds no actual optical detail.
   const nameZoom = await textRead(paper.identity.fullNameZoom, "fullName");
   const nameLabelled = await textRead(paper.identity.fullNameLabelled, "fullName");
-  const numberLabelled = await textRead(paper.identity.studentNumberLabelled, "studentNumber");
   const numberZoom = await textRead(paper.identity.studentNumberZoom, "studentNumber");
-  const fullName = selectIdentity(nameZoom, nameLabelled, "fullName");
+  const numberLabelled = await textRead(paper.identity.studentNumberLabelled, "studentNumber");
+  const fullName = selectIdentity(nameZoom, nameLabelled, "fullName")
+    || (!detailed ? nameZoom || nameLabelled : "");
   // The isolated handwriting avoids printed-label contamination. A labelled
   // read is a fallback only; numeric disagreements still require review.
-  const studentNumber = selectIdentity(numberZoom, numberLabelled, "studentNumber");
+  const studentNumber = selectIdentity(numberZoom, numberLabelled, "studentNumber")
+    || (!detailed ? numberZoom || numberLabelled : "");
   const course = parseGlmCourse(await read(paper.regions.course, "Text Recognition:"));
   for (const [key, a, b] of [["fullName", nameZoom, nameLabelled], ["studentNumber", numberLabelled, numberZoom]]) {
     if (a.toLocaleLowerCase("tr-TR") !== b.toLocaleLowerCase("tr-TR")) {
@@ -141,8 +268,8 @@ export async function readGlmRegions(
       alternatives[key] = [...new Set([a, b].filter(Boolean))];
     }
   }
-  // Typed field gates do not guess character substitutions. Invalid native
-  // text stays visible as an alternative, never as a name/number/score value.
+  // Fast reading retains literal imperfect transcriptions for manual review;
+  // validation must not turn a populated cell into an empty one.
   const reject = (field: string, value: string) => {
     uncertain.add(field);
     alternatives[field] = [...new Set([...(alternatives[field] || []), value].filter(Boolean))];
@@ -151,10 +278,11 @@ export async function readGlmRegions(
   if (!studentNumber) { reject("studentNumber", numberLabelled); reject("studentNumber", numberZoom); }
   numbers.scores = numbers.scores.map((value, i) => {
     if (parseScore(value) !== null) return value;
-    reject(`s${i + 1}`, value); return "";
+    reject(`s${i + 1}`, value); return detailed ? "" : value;
   });
   if (parseScore(numbers.writtenTotal) === null) {
-    reject("writtenTotal", numbers.writtenTotal); numbers.writtenTotal = "";
+    reject("writtenTotal", numbers.writtenTotal);
+    if (detailed) numbers.writtenTotal = "";
   }
   const output = normalizePaper({ fullName, studentNumber, ...numbers, ...course, uncertainFields: [...uncertain] }, count);
   return { ...output, alternatives, readingStrategy: "regions",

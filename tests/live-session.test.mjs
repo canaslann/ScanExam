@@ -336,3 +336,17 @@ test("capture uses the sharpest validated frame and never leaks an old paper acr
   frames.reset();
   assert.equal(frames.consider(2, "after-blur", 2.5), "after-blur");
 });
+
+
+test("rapid capture accepts the first suitable frame and remains latched until sustained removal", () => {
+  const gate = new CaptureGate(1, 0);
+  const box = { left: 20, top: 20, width: 600, height: 300 };
+  assert.equal(gate.sample(box, 0, false), "searching");
+  assert.equal(gate.sample(box, 180, true), "captured");
+  assert.equal(gate.sample(box, 360, true), "remove");
+  assert.equal(gate.sample(null, 540, false), "remove");
+  assert.equal(gate.sample(box, 720, true), "remove");
+  assert.equal(gate.sample(null, 900, false), "remove");
+  assert.equal(gate.sample(null, 1500, false), "searching");
+  assert.equal(gate.sample(box, 1680, true), "captured");
+});

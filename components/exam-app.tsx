@@ -11,12 +11,15 @@ import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } f
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
+import { prepareCaptureImage } from "@/lib/capture-image";
 import { LiveCamera } from "@/components/live-camera";
+import { RapidCamera } from "@/components/rapid-camera";
 import { exportExamWorkbook, MAX_QUESTIONS, validPcCode, validQuestionCount, type PcCode } from "@/lib/exam";
 import { sumScores, type CheckMode } from "@/lib/reader-contract";
 import { approvalIssue, cellKeys, cellState, cellValue, editCell, exportIssues, MAX_PENDING, metadataSignature, metadataWarnings, rowSignature, sessionExam, type CellKey, type ScanRow, type ScanSession } from "@/lib/scan-session";
 import { sharedPhoto } from "@/lib/shared-client";
 import { useSharedScan } from "@/hooks/use-shared-scan";
+import { StudentRosterUpload } from "@/components/student-roster-upload";
 
 type ReaderStatus = { ready: boolean; model: string; message: string };
 async function readerStatus(): Promise<ReaderStatus> {
@@ -32,6 +35,10 @@ export function ExamApp() {
   const { resolvedTheme } = useTheme();
   const sync = useSharedScan();
   const { session, sessionRef, ready, error: storageError, paused, uploads, writing, updateRow, updateMeta } = sync;
+  const [captureMethod, setCaptureMethod] = useState<"stable" | "manual" | "rapid" | "gallery">("stable");
+  const [importing, setImporting] = useState(false);
+  const [importProgress, setImportProgress] = useState("");
+  const importLock = useRef(false);
   const [mode, setMode] = useState<CheckMode>("single"), [status, setStatus] = useState<ReaderStatus | null>(null);
   const [selected, setSelected] = useState<string | null>(null), [photo, setPhoto] = useState<{ id: string; url: string } | null>(null);
   const [zoomedPhoto, setZoomedPhoto] = useState<string | null>(null);
@@ -59,10 +66,12 @@ export function ExamApp() {
   const issues = exportIssues(session), selectedRow = session.rows.find(row => row.id === selected);
   const editable = sync.connected, usable = editable;
   const completed = session.rows.filter(row => row.status === "done").length;
+  const excessiveRows = session.rows.flatMap((row, i) => (sumScores(row.draft.scores) ?? 0) > 100 ? [i + 1] : []);
   const approvalProblem = selectedRow ? approvalIssue(session, selectedRow) : undefined;
   const metadataReview = selectedRow && selectedRow.metadataApproval !== metadataSignature(session, selectedRow)
     ? metadataWarnings(session, selectedRow) : [];
   const readingDetails = [...new Set(selectedRow?.draft.warnings || [])];
+  const rosterMatch = selectedRow?.draft.rosterMatch?.rosterId === session.roster?.id ? selectedRow?.draft.rosterMatch : undefined;
   const scoreSum = selectedRow ? sumScores(selectedRow.draft.scores) : null;
   const totalMismatch = selectedRow && scoreSum !== null && !approvalProblem &&
     cellState(session, selectedRow, "writtenTotal").color === "yellow" &&
@@ -87,10 +96,10 @@ export function ExamApp() {
       </div>
     );
   }
-  async function capture(blob: Blob, replacementId?: string) {
+  async function capture(blob: Blob, replacementId?: string, source: "camera" | "gallery" = "camera") {
     if (!usable) throw new Error("Bilgisayar bağlantısı hazır değil; görüntü korunmalı.");
-    if (pending >= MAX_PENDING) throw new Error("Kuyruk dolu; aktarımların/okumaların tamamlanmasını bekleyin.");
-    await sync.capture(blob, mode, replacementId);
+    if (uploads >= MAX_PENDING) throw new Error("Cihazdaki aktarım kuyruğu dolu; aktarımın tamamlanmasını bekleyin.");
+    await sync.capture(blob, mode, replacementId, source);
   }
   function approve(row: ScanRow) {
     void sync.command({ action: "approve", id: row.id, signature: rowSignature(row, sessionRef.current) })
@@ -195,6 +204,7 @@ export function ExamApp() {
             <CardTitle className="section-title"><span className="step-number">01</span><span>Sınavı hazırla</span></CardTitle>
           </CardHeader>
           <CardContent className="space-y-4">
+            <StudentRosterUpload roster={session.roster} disabled={!usable || writing > 0} command={sync.command} />
             <div className="grid gap-4 sm:grid-cols-[1fr_2fr_1fr]">
               <div>
                 <Label htmlFor="course-code">Ders kodu</Label>
@@ -288,25 +298,54 @@ export function ExamApp() {
         <div className="grid gap-5 lg:grid-cols-[1.5fr_1fr]">
           <Card id="live-scan" className="scan-card">
             <CardHeader>
-              <CardTitle className="section-title"><span className="step-number">02</span><span>Kâğıdı kameraya tutun</span><span className="camera-badge"><span /> CANLI TARAMA</span></CardTitle>
+              <CardTitle className="section-title"><span className="step-number">02</span><span>Görüntü ekleme yöntemi</span><span className="camera-badge"><span /> CANLI TARAMA</span></CardTitle>
             </CardHeader>
             <CardContent>
-              <LiveCamera
-                questionCount={session.pcMap.length}
-                enabled={usable && pending < MAX_PENDING}
-                onCapture={capture}
-              />
+              <div className="mb-4 grid grid-cols-2 gap-2" role="group" aria-label="Görüntü ekleme yöntemi">
+                {([
+                  ["stable", "Mevcut otomatik tarama"],
+                  ["manual", "Seri fotoğraf çekimi"],
+                  ["rapid", "Hızlı otomatik yakalama"],
+                  ["gallery", "Galeriden toplu yükle"],
+                ] as const).map(([value, label]) => (
+                  <Button key={value} variant={captureMethod === value ? "default" : "outline"}
+                    className="h-auto whitespace-normal py-3" aria-pressed={captureMethod === value}
+                    disabled={importing} onClick={() => setCaptureMethod(value)}>{label}</Button>
+                ))}
+              </div>
+              {captureMethod === "rapid" ? (
+                <RapidCamera questionCount={session.pcMap.length}
+                  enabled={usable && uploads < MAX_PENDING && !importing} onCapture={capture}/>
+              ) : captureMethod !== "gallery" ? (
+                <LiveCamera key={captureMethod} captureMode={captureMethod}
+                  questionCount={session.pcMap.length}
+                  enabled={usable && uploads < MAX_PENDING && !importing}
+                  onCapture={capture} />
+              ) : (
+                <div className="rounded-xl border p-4 space-y-3">
+                  <p className="text-sm text-muted-foreground">Tam sayfa veya üst form fotoğraflarını galeriden birlikte seçin. Tablo görüntünün içinden okunur; hizalama gerekmez. Fotoğraflar sırayla kaydedilip aktarılır; bilgisayar mevcut kuyruğu sırayla okumaya devam eder.</p>
+                  <Button disabled={!usable || importing || uploads >= MAX_PENDING}
+                    onClick={() => { replacement.current = null; gallery.current?.click(); }}>
+                    <Upload className="size-4" />Fotoğrafları seç
+                  </Button>
+                </div>
+              )}
+              <p className="mt-3 text-xs text-muted-foreground">{captureMethod === "rapid"
+                ? "Uygun form ilk net algılamada yakalanır. Aynı kâğıt yeniden çekilmez; sıradakini koymadan önce kâğıdı çerçeveden çıkarın. Netlik için mevcut otomatik taramayı da seçebilirsiniz."
+                : "Fotoğrafı ekledikten sonra OCR sonucunu beklemeden devam edin. Hedef görüntü başına 3–5 saniyede aktarım; süre bağlantı ve cihaza bağlıdır."}</p>
+              {sync.lastTransferMs !== null && <p className="mt-2 text-sm text-success-text" role="status">Son fotoğraf bilgisayara aktarıldı · kayıt sonrası {(sync.lastTransferMs / 1000).toFixed(1)} sn · OCR sırayla devam ediyor.</p>}
+              {importProgress && <p role="status" aria-live="polite" className="mt-2 text-sm">{importProgress}</p>}
               <div className="mt-4 flex flex-wrap items-center gap-3">
                 <Button
                   variant="outline"
-                  disabled={!usable || pending >= MAX_PENDING}
+                  disabled={!usable || importing || uploads >= MAX_PENDING}
                   onClick={() => {
                     replacement.current = null;
                     gallery.current?.click();
                   }}
                 >
                   <Upload className="size-4" />
-                  Fotoğraf seç
+                  Galeriden fotoğraf seç
                 </Button>
                 <Button
                   variant="ghost"
@@ -343,18 +382,22 @@ export function ExamApp() {
                   const selectedFiles = replacementId
                     ? files.slice(0, 1)
                     : files;
-                  for (const file of selectedFiles) {
-                    try {
-                      await capture(file, replacementId || undefined);
-                    } catch (error) {
-                      toast.error(
-                        error instanceof Error
-                          ? error.message
-                          : "Görüntü eklenemedi.",
-                      );
-                      break;
+                  if (!selectedFiles.length || importLock.current) return;
+                  importLock.current = true;
+                  setImporting(true);
+                  let saved = 0;
+                  try {
+                    for (const file of selectedFiles) {
+                      setImportProgress(`${saved + 1}/${selectedFiles.length} fotoğraf hazırlanıyor…`);
+                      await capture(await prepareCaptureImage(file), replacementId || undefined, "gallery");
+                      saved++;
+                      setImportProgress(`${saved}/${selectedFiles.length} fotoğraf bu cihazda kaydedildi · bilgisayara aktarılıyor.`);
                     }
-                  }
+                    toast.success(`${saved} fotoğraf kaydedildi; aktarım ve okuma arka planda sürüyor.`);
+                  } catch (error) {
+                    setImportProgress(`${saved}/${selectedFiles.length} fotoğraf kaydedildi. Kalan ${selectedFiles.length - saved} fotoğraf eklenmedi; tekrar seçebilirsiniz.`);
+                    toast.error(error instanceof Error ? error.message : "Görüntü eklenemedi.");
+                  } finally { importLock.current = false; setImporting(false); }
                 }}
               />
             </CardContent>
@@ -450,6 +493,9 @@ export function ExamApp() {
             </Button>
           </CardHeader>
           <CardContent className="p-0">
+            {excessiveRows.length > 0 && <div role="alert" className="border-b border-danger-border bg-danger-soft px-4 py-3 text-sm text-danger-text">
+              {excessiveRows.join(", ")}. satırda puan toplamı 100’ü aşıyor. Bu sonuç onaylanamaz; şüpheli puanları kaynak kâğıtla kontrol edin. Puanlar 100’e kırpılmaz veya toplamdan türetilmez.
+            </div>}
             <Table>
               <TableHeader>
                 <TableRow className="bg-muted">
@@ -540,7 +586,7 @@ export function ExamApp() {
                             <Button
                               size="sm"
                               variant="outline"
-                              disabled={!usable || pending >= MAX_PENDING}
+                              disabled={!usable || importing || uploads >= MAX_PENDING}
                               onClick={() =>
                                 void updateRow(row.id, (current) => ({
                                   ...current,
@@ -555,7 +601,7 @@ export function ExamApp() {
                               size="sm"
                               variant="outline"
                               aria-label={`${index + 1}. satır görüntüsünü yenile`}
-                              disabled={!usable || pending >= MAX_PENDING}
+                              disabled={!usable || importing || uploads >= MAX_PENDING}
                               onClick={() => {
                                 replacement.current = row.id;
                                 gallery.current?.click();
@@ -663,6 +709,14 @@ export function ExamApp() {
                       <ul className="mt-1 space-y-1">{metadataReview.map(warning => <li key={warning}>{warning}</li>)}</ul>
                     </div>
                   )}
+                  {rosterMatch && <div className="rounded-lg border border-input p-3 text-sm">
+                    <p className="font-medium">{rosterMatch.status === "matched" ? "Excel öğrenci listesiyle eşleşti" : rosterMatch.status === "ambiguous" ? "Excel eşleşmesi için kontrol gerekiyor" : "Excel listesinde uygun eşleşme bulunamadı"}</p>
+                    <p className="mt-1 text-xs text-muted-foreground">Kâğıttan okunan: {rosterMatch.original.studentNumber || "Numara okunamadı"} · {rosterMatch.original.fullName || "İsim okunamadı"}</p>
+                    {rosterMatch.reason === "number-name-conflict" && <p className="mt-1 text-xs text-warning-text">Okunan numara Excel listesinde farklı bir isme ait. Kâğıttaki isim korundu; listeyi ve numarayı karşılaştırın.</p>}
+                    {rosterMatch.reason === "number-not-listed" && <p className="mt-1 text-xs text-warning-text">Okunan numaranın Excel listesinde birebir karşılığı yok. Başka bir öğrenciye atanmadı; kâğıttaki isim ve numarayı kontrol edin.</p>}
+                    {rosterMatch.status === "matched" && <p className="mt-1 text-xs">Listeden alınan: {rosterMatch.student?.studentNumber} · {rosterMatch.student?.fullName}</p>}
+                    {rosterMatch.status === "ambiguous" && <p className="mt-1 text-xs">Yakın adaylar: {rosterMatch.candidates.map(student => `${student.studentNumber} · ${student.fullName}`).join(" / ")}. Özgün okuma korundu.</p>}
+                  </div>}
                   {!!readingDetails.length && (
                     <details className="text-xs leading-5 text-muted-foreground">
                       <summary className="cursor-pointer">Okuma ayrıntıları</summary>
@@ -672,6 +726,14 @@ export function ExamApp() {
                 </section>
               </div>
               <div className="flex shrink-0 flex-wrap justify-end gap-2 border-t bg-card px-4 py-3">
+              {selectedRow.status === "done" && selectedRow.hasPhoto && <div className="mr-auto space-y-1">
+                <Button variant="outline" disabled={!usable || writing > 0} onClick={() =>
+                  void sync.command({ action: "reread", id: selectedRow.id, signature: rowSignature(selectedRow, sessionRef.current) })
+                    .then(() => { setSelected(null); toast.success("Kaynak fotoğraf yeniden okuma sırasına alındı."); }).catch(() => undefined)}>
+                  <ScanLine className="size-4" />Yeniden oku
+                </Button>
+                <p className="text-xs text-muted-foreground">Elle düzenlediğiniz dolu hücreler korunur; boş hücreler yeniden okunur.</p>
+              </div>}
               {selectedRow.status === "error" && (
                 <Button
                   variant="outline"

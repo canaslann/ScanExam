@@ -1,19 +1,54 @@
 import { parseScore, sumScores } from "./reader-contract.ts";
 import type { PreparedPaper } from "./paper-preparation.ts";
 
+/** Replacement digits must come from a new visual reading, never subtraction. */
+export async function recoverFastOverflow(first: string[], paper: PreparedPaper,
+  read: (image: string, tokens: number) => Promise<string>, writtenTotal = "") {
+  const result = { scores: [...first], alternatives: {} as Record<string, string[]>, reviewFields: [] as string[], warnings: [] as string[] };
+  if ((sumScores(first) ?? 0) <= 100 || !paper.scoreRowImage || paper.scoreCells?.length !== first.length) return result;
+  const row = (await read(paper.scoreRowImage, Math.max(64, first.length * 10))).replace(/^Puan\s*:?\s*/iu, "")
+    .trim().split(/[|\s]+/).filter(Boolean);
+  if (row.length !== first.length || row.some(value => parseScore(value) === null)) return result;
+  const changes = row.flatMap((value, i) => parseScore(value) !== parseScore(first[i]) ? [i] : [])
+    .sort((a, b) => (parseScore(first[b])! - parseScore(row[b])!) - (parseScore(first[a])! - parseScore(row[a])!)).slice(0, 2);
+  const proposed = [...first];
+  // A complete second visual row agreeing with the independently written Not
+  // can resolve a single bad digit. Both literal readings remain reviewable.
+  if(changes.length===1 && parseScore(writtenTotal)!==null && sumScores(row)===parseScore(writtenTotal)) {
+    const i=changes[0],key=`s${i+1}`;
+    result.scores=row;
+    result.alternatives[key]=[first[i],row[i]];
+    result.reviewFields.push(key);
+    result.warnings.push("100 puanı aşan ilk okuma, puan satırının yeni görsel okumasıyla düzeltildi. Yeni satır kâğıtta yazan Not ile uyuşuyor; ilk değer alternatiflerde korunuyor.");
+    return result;
+  }
+  for (const i of changes) {
+    const detail = (await read(paper.scoreCells[i].color, 24)).replace(/^Puan\s*:?\s*/iu, "").trim();
+    const key = `s${i + 1}`;
+    result.alternatives[key] = [...new Set([first[i], row[i], detail].filter(Boolean))]; result.reviewFields.push(key);
+    if (parseScore(detail) !== null && parseScore(detail) === parseScore(row[i])) proposed[i] = row[i];
+  }
+  if ((sumScores(proposed) ?? 101) <= 100) {
+    result.scores = proposed;
+    result.warnings.push("100 puan sınırı aşıldığı için şüpheli puan, kendi hücresi ve puan satırından kontrol edildi. Desteklenen okuma seçildi; ilk değer alternatiflerde saklanıyor.");
+  }
+  return result;
+}
+
 /** Check common digit confusions even when the total looks plausible. */
 export async function refineConfusableScores(
   first: string[],
   cells: PreparedPaper["scoreCells"],
   read: (image: string) => Promise<string>,
   verify?: (image: string) => Promise<string>,
+  rowReadings?: string[],
 ) {
   const scores = [...first], alternatives: Record<string, string[]> = {};
   const reviewFields: string[] = [], warnings: string[] = [];
   if (cells?.length !== first.length) return { scores, alternatives, reviewFields, warnings };
   // Bound extra work for large forms. The complete table remains the primary
   // transcription; arithmetic and expected answers are never sent to readers.
-  const targets = first.flatMap((value, index) => parseScore(value) !== null && /[1237]/.test(value) ? [index] : []).slice(0, 6);
+  const targets = first.flatMap((value, index) => parseScore(value) !== null && (rowReadings ? parseScore(rowReadings[index]) !== parseScore(value) : /[1237]/.test(value)) ? [index] : []).slice(0, 6);
   for (const index of targets) {
     const detail = await read(cells[index].color);
     const padded = await read(cells[index].padded);

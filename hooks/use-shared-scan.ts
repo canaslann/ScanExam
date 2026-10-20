@@ -8,6 +8,7 @@ import type { CheckMode } from "@/lib/reader-contract";
 
 export function useSharedScan() {
   const [session, setSession] = useState<ScanSession>(newSession), sessionRef = useRef(session);
+  const [lastTransferMs, setLastTransferMs] = useState<number | null>(null);
   const [ready, setReady] = useState(false);
   const [connectionError, setConnectionError] = useState(""), [uploadError, setUploadError] = useState(""), [commandError, setCommandError] = useState("");
   const [paused, setPaused] = useState(false), [uploads, setUploads] = useState(0), [writing, setWriting] = useState(0);
@@ -78,7 +79,7 @@ export function useSharedScan() {
             // Remove only after the computer's database confirms an atomic commit.
             await removeCapture(job.opId);
             const remaining = await pendingCaptures();
-            if (!disposed) { apply(snapshot); setUploads(remaining.length); setUploadError(""); }
+            if (!disposed) { apply(snapshot); setUploads(remaining.length); setLastTransferMs(Date.now() - job.created); setUploadError(""); }
             // Drain completed uploads immediately, without delaying the next paper.
             nextDelay = remaining.length ? 0 : 1000;
           }
@@ -90,10 +91,10 @@ export function useSharedScan() {
     void upload();
     return () => { disposed = true; clearTimeout(timer); };
   }, [apply, uploadTick]);
-  const capture = async (blob: Blob, mode: CheckMode, replacementId?: string) => {
+  const capture = async (blob: Blob, mode: CheckMode, replacementId?: string, source: "camera" | "gallery" = "camera") => {
     if (!base.current || !ready) throw new Error("Bilgisayardaki ortak tablo hazır değil.");
     if (!blob.size || blob.size > 25 * 1024 * 1024) throw new Error("Görüntü boş veya 25 MB sınırını aşıyor.");
-    const job: CaptureUpload = { id: replacementId || crypto.randomUUID(), opId: crypto.randomUUID(), examId: base.current.examId, mode, blob, created: Date.now() };
+    const job: CaptureUpload = { id: replacementId || crypto.randomUUID(), opId: crypto.randomUUID(), examId: base.current.examId, mode, source, blob, created: Date.now() };
     await saveCapture(job);
     if (alive.current) { setUploads(value => value + 1); setUploadTick(value => value + 1); }
   };
@@ -111,6 +112,6 @@ export function useSharedScan() {
       void command({ action: "meta", key, value, previous: sessionRef.current[key as keyof ScanSession] }, true).catch(() => undefined);
   };
   return { session, sessionRef, ready, connected: ready && !connectionError,
-    error: [connectionError, uploadError, commandError].filter(Boolean).join(" "), paused, uploads, writing, command, capture, updateRow, updateMeta,
+    error: [connectionError, uploadError, commandError].filter(Boolean).join(" "), paused, uploads, writing, lastTransferMs, command, capture, updateRow, updateMeta,
     snapshot: () => base.current };
 }

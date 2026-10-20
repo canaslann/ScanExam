@@ -19,6 +19,43 @@ async function fixture(t) {
 const reading = (count = 5) => normalizePaper({ fullName: "İpek Örnek", studentNumber: "00001234567", scores: Array(count).fill("10"),
   writtenTotal: String(count * 10), courseCode: "BILM374-2022", courseName: "YAPAY ZEKA", pcMap: Array(count).fill("PÇ2"), uncertainFields: [] }, count);
 
+test('optional roster is shared, updates existing and in-flight readings, preserves edits, and clears on a new exam',async t=>{
+  const {a,b,command}=await fixture(t), id=randomUUID();
+  command(a,'capture',{id,mode:'single'},new Uint8Array([1]));const job=a.claim();a.finish(id,job.token,{...reading(),fullName:'Ipek Ornek'});
+  command(b,'roster',{previousId:null,fileName:'Liste.xlsx',students:[{studentNumber:'00001234567',fullName:'İpek Örnek'}]});
+  let state=a.snapshot();assert.equal(state.session.rows[0].draft.fullName,'İpek Örnek');assert.equal(state.session.rows[0].draft.rosterMatch.original.fullName,'Ipek Ornek');
+  assert.equal(b.snapshot().session.roster.id,state.session.roster.id);
+  command(a,'roster',{previousId:state.session.roster.id,students:null});assert.equal(a.snapshot().session.rows[0].draft.fullName,'Ipek Ornek');
+  const next=randomUUID();command(b,'capture',{id:next,mode:'single'},new Uint8Array([2]));const pending=a.claim();
+  command(b,'roster',{previousId:null,fileName:'Güncel.xlsx',students:[{studentNumber:'00001234567',fullName:'İpek Örnek'}]});
+  a.finish(next,pending.token,{...reading(),fullName:'Ipek Ornek'});assert.equal(b.snapshot().session.rows[1].draft.fullName,'İpek Örnek');
+  command(a,'edit',{id,field:'fullName',previous:'İpek Örnek',value:'Elle Düzenlendi'});
+  state=a.snapshot();command(b,'roster',{previousId:state.session.roster.id,fileName:'Yeni.xlsx',students:[{studentNumber:'00001234567',fullName:'İpek Yeni'}]});
+  assert.equal(a.snapshot().session.rows[0].draft.fullName,'Elle Düzenlendi');
+  state=a.snapshot();command(a,'reset',{revision:state.revision});assert.equal(b.snapshot().session.roster,undefined);
+});
+
+test('roster acknowledgement retries are idempotent, stale replacements conflict, and invalid imports are atomic',async t=>{
+  const {a,b}=await fixture(t), request={action:'roster',opId:randomUUID(),examId:a.snapshot().examId,previousId:null,fileName:'Liste.xlsx',students:[{studentNumber:'00001234567',fullName:'İpek Örnek'}]};
+  const first=a.mutate(request);assert.equal(b.mutate(request).session.roster.id,first.session.roster.id);
+  assert.throws(()=>b.mutate({...request,opId:randomUUID()}),e=>e.status===409);
+  const rev=a.snapshot().revision;
+  assert.throws(()=>a.mutate({...request,opId:randomUUID(),previousId:first.session.roster.id,students:[{studentNumber:'abc',fullName:'Öğrenci'}]}),e=>e.status===400);
+  assert.equal(a.snapshot().revision,rev);assert.equal(a.snapshot().session.roster.students.length,1);
+});
+
+test('explicit reread reuses the photo, refills empty identity edits and preserves populated teacher corrections',async t=>{
+  const {a,b,command}=await fixture(t), id=randomUUID();command(a,'capture',{id,mode:'single'},new Uint8Array([1]));
+  const first=a.claim();a.finish(id,first.token,reading());
+  command(b,'edit',{id,field:'fullName',previous:'İpek Örnek',value:'\t'});
+  command(b,'edit',{id,field:'s1',previous:'10',value:'12'});
+  const before=a.snapshot();command(a,'reread',{id,signature:rowSignature(before.session.rows[0],before.session)});
+  assert.equal(b.snapshot().session.rows[0].status,'queued');assert.deepEqual(a.photo(id),new Uint8Array([1]));
+  const second=a.claim();a.finish(id,second.token,{...reading(),fullName:'Çağrı Öztürk'});
+  const row=a.snapshot().session.rows[0];assert.equal(row.draft.fullName,'Çağrı Öztürk');assert.equal(row.draft.scores[0],'12');
+  assert.throws(()=>command(b,'reread',{id,signature:rowSignature(before.session.rows[0],before.session)}),e=>e.status===409);
+});
+
 test("phone capture, source photo, model output and edits are visible to two independent database clients", async t => {
   const { a, b, command } = await fixture(t), id = randomUUID();
   const bytes = new Uint8Array([1, 2, 3]);

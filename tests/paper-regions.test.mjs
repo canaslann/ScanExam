@@ -228,3 +228,102 @@ test("double check preserves prior region/full-table alternatives even when fina
   assert.deepEqual(result.alternatives.writtenTotal, ["80", "57", "78"]);
   assert.ok(result.reviewFields.includes("writtenTotal"));
 });
+
+
+test("portrait document preparation preserves the complete page when fixed form geometry is absent", async () => {
+  const { default: sharp } = await import("sharp");
+  const { prepareServerPaper } = await import("../lib/paper-preparation.ts");
+  // The red marker is below the old width*0.6 crop, where a free photo's table may be.
+  const source = await sharp({ create: { width: 900, height: 1600, channels: 3, background: "white" } })
+    .composite([{ input: await sharp({ create: { width: 400, height: 100, channels: 3, background: "red" } }).png().toBuffer(), left: 200, top: 1200 }]).png().toBuffer();
+  const paper = await prepareServerPaper(source, 5);
+  assert.ok(paper.documentImage);
+  const { data, info } = await sharp(Buffer.from(paper.image, "base64")).raw().toBuffer({ resolveWithObject: true });
+  assert.equal(info.height, 1280); assert.equal(info.width, 720);
+  const offset = (1000 * info.width + 300) * info.channels;
+  assert.ok(data[offset] > 200 && data[offset + 1] < 50, "lower-page content must reach the OCR input");
+});
+
+
+test("free-photo rectification finds a displaced tilted table and preserves its measured cells", async () => {
+  const { default: sharp } = await import("sharp");
+  const { prepareServerPaper } = await import("../lib/paper-preparation.ts");
+  const { data, width, height } = fixture();
+  // Complete the outer printed rectangle, then put it on a photographed page.
+  for (const x of [20, 620]) for (let y = 15; y <= 220; y++) {
+    data[y * width + x] = 40; data[y * width + x + 1] = 40;
+  }
+  const photographed = await sharp(data, { raw: { width, height, channels: 1 } })
+    .extend({ top: 240, bottom: 600, left: 70, right: 80, background: "white" })
+    .rotate(3, { background: "white" }).png().toBuffer();
+  const paper = await prepareServerPaper(photographed, 5);
+  assert.ok(paper.regions, "full-page photo should use measured regions, not expensive full-document OCR");
+  assert.equal(paper.scoreCells.length, 5);
+  assert.ok(paper.identity.fullNameZoom);
+  assert.ok(paper.scoreRowImage);
+  const bounded = await sharp(Buffer.from(paper.nativeImages.get(paper.identity.fullNameZoom), "base64")).metadata();
+  assert.ok(bounded.width <= 960 && bounded.height <= 256, "identity OCR preserves finer letter and digit details within bounded crops");
+  const wrongCount = await prepareServerPaper(photographed, 4);
+  assert.equal(wrongCount.regions, undefined, "rectification must not invent a different column count");
+});
+
+test("one spurious vertical pen stroke is ignored only when every genuine score divider exists", () => {
+  const { data, width, height } = fixture();
+  for (let y = 226; y <= 274; y++) data[y * width + 250] = 40;
+  const layout = detectPaperLayout(data, width, height, 1);
+  assert.ok(layout); assert.equal(layout.scoreCells.length, 5);
+  assert.equal(detectPaperLayout(data, width, height, 1, undefined, 4), null);
+});
+
+
+test("numeric-cell focusing keeps literal zero ink while removing blank margins and ruled borders", async () => {
+  const { default: sharp } = await import("sharp");
+  const { focusNumericCell } = await import("../lib/document-geometry.ts");
+  const source = await sharp(Buffer.from('<svg width="1000" height="120"><rect width="1000" height="120" fill="white"/><path d="M0 20H1000M0 100H1000" stroke="gray" stroke-width="2"/><ellipse cx="100" cy="60" rx="15" ry="22" fill="none" stroke="red" stroke-width="4"/></svg>')).jpeg().toBuffer();
+  const focused = Buffer.from(await focusNumericCell(source.toString("base64")), "base64");
+  const { data, info } = await sharp(focused).removeAlpha().raw().toBuffer({ resolveWithObject: true });
+  assert.ok(info.width < 200, "empty cell margins should not become model image tokens");
+  assert.ok(data.some((value, i) => i % 3 === 0 && value > 150 && data[i + 1] < 100), "zero ink must survive focusing");
+});
+test('a bowed closed form recovers measured cells instead of full-document OCR', async () => {
+  const sharp=(await import('sharp')).default;
+  const {prepareServerPaper}=await import('../lib/paper-preparation.ts');
+  const {data,width,height}=fixture();
+  for(let y=15;y<=220;y++)for(const x of [20,21,620,621])data[y*width+x]=40;
+  const curved=new Uint8Array(width*height).fill(225);
+  for(let x=0;x<width;x++){const shift=Math.round(10*Math.pow(2*x/width-1,2));for(let y=0;y<height-shift;y++)curved[(y+shift)*width+x]=data[y*width+x];}
+  assert.equal(detectPaperLayout(curved,width,height,1,undefined,5),null);
+  const image=await sharp(curved,{raw:{width,height,channels:1}}).png().toBuffer();
+  const p=await prepareServerPaper(image,5,true);
+  assert.ok(p.regions);assert.equal(p.scoreCells.length,5);assert.equal(p.documentImage,undefined);
+});
+
+test('gallery photos with a clipped outer right edge recover only a complete measured question grid', async () => {
+  const sharp = (await import('sharp')).default;
+  const { prepareServerPaper } = await import('../lib/paper-preparation.ts');
+  const { data, width, height } = fixture();
+  for (let y=15;y<=220;y++) for (const x of [20,21,620,621]) data[y*width+x]=40;
+  const photo = await sharp(data,{raw:{width,height,channels:1}})
+    .extract({left:0,top:0,width:600,height})
+    .extend({top:240,bottom:600,left:70,right:80,background:'white'})
+    .rotate(-2,{background:'white'}).png().toBuffer();
+  const paper=await prepareServerPaper(photo,5,true);
+  assert.ok(paper.regions,'an open outer edge must not force whole-page OCR');
+  assert.equal(paper.scoreCells.length,5);assert.ok(paper.identity.studentNumber);
+  const wrongCount=await prepareServerPaper(photo,4,true);
+  assert.equal(wrongCount.regions,undefined,'the new candidate still requires every configured divider');
+});
+
+test('adaptive geometry finds measured grids under varying shadows without relaxing column validation',()=>{
+  for(const count of [3,5,7]) {
+    const {data,width,height}=fixture({questionCount:count});
+    for(let y=0;y<height;y++)for(let x=0;x<width;x++){
+      const light=Math.min(1,.25+(x+y*.6)/650);
+      data[y*width+x]=Math.round(data[y*width+x]*light);
+    }
+    assert.equal(detectPaperLayout(data,width,height,1,undefined,count),null);
+    const layout=detectPaperLayout(data,width,height,1,undefined,count,true);
+    assert.ok(layout);assert.equal(layout.scoreCells.length,count);
+    assert.equal(detectPaperLayout(data,width,height,1,undefined,count+1,true),null);
+  }
+});

@@ -20,7 +20,8 @@ export function needsNameRefinement(output: ScanOutput): boolean {
   const candidates = [output.fullName, ...(output.alternatives?.fullName || [])];
   // q/w/x are allowed in names. They trigger a check of Turkish handwriting,
   // not rejection or automatic conversion; legitimate foreign names survive.
-  return !valid(output.fullName) || candidates.some(value => /[qwx\d]/iu.test(value));
+  return !valid(output.fullName) || candidates.some(value => /[qwx\d]/iu.test(value))
+    || new Set(candidates.filter(Boolean).map(fold)).size > 1;
 }
 
 /** Select only a complete literal reading, never splice words or invent ç. */

@@ -2,9 +2,10 @@ import { DatabaseSync } from "node:sqlite";
 import { randomUUID } from "node:crypto";
 import {
   approvalIssue, cellKeys, cellValue, confirmRow, editCell, emptyRow, MAX_PENDING, mergeReading,
-  newSession, restoreSession, rowSignature, type CellKey, type ScanRow, type ScanSession,
+  newSession, restoreSession, rowSignature, reconcileRoster, type CellKey, type ScanRow, type ScanSession,
 } from "./scan-session.ts";
 import { validPcCode, validQuestionCount, type ScanOutput } from "./exam.ts";
+import { validateRosterStudents } from "./student-roster.ts";
 
 export type SharedSnapshot = { revision: number; examId: string; paused: boolean; session: ScanSession };
 export class SharedError extends Error {
@@ -46,6 +47,9 @@ export class SharedSessionStore {
     if (!uuid(id)) throw new SharedError("Geçersiz fotoğraf kimliği.");
     return (this.db.prepare("SELECT bytes FROM photos WHERE id=?").get(id) as { bytes: Uint8Array } | undefined)?.bytes;
   }
+  activeReading(now=Date.now()):boolean {
+    return !!this.db.prepare("SELECT id FROM leases WHERE touched>=? LIMIT 1").get(now-15_000);
+  }
   mutate(input: unknown, photo?: Uint8Array): SharedSnapshot {
     if (!input || typeof input !== "object" || Array.isArray(input)) throw new SharedError("Geçersiz tablo işlemi.");
     const command = input as Record<string, unknown>;
@@ -57,8 +61,24 @@ export class SharedSessionStore {
       const session = state.session;
       const row = session.rows.find(value => value.id === command.id);
       switch (command.action) {
+        case "roster": {
+          if (command.previousId !== (session.roster?.id ?? null))
+            throw new SharedError("Öğrenci listesi diğer cihazda değişti; güncel listeyi kontrol edin.", 409);
+          if (command.students === null) session.roster = undefined;
+          else {
+            if (typeof command.fileName !== "string" || !command.fileName.trim() || command.fileName.length > 200)
+              throw new SharedError("Öğrenci listesi dosya adı geçersiz.");
+            let students;
+            try { students = validateRosterStudents(command.students); }
+            catch (error) { throw new SharedError(error instanceof Error ? error.message : "Öğrenci listesi geçersiz."); }
+            session.roster = { id: randomUUID(), fileName: command.fileName.trim(), students };
+          }
+          session.rows = session.rows.map(r => reconcileRoster(r, session.roster));
+          break;
+        }
         case "capture": {
           if (!uuid(command.id) || !["single", "double"].includes(String(command.mode))) throw new SharedError("Tarama bilgisi geçersiz.");
+          if(command.source!==undefined && !["camera","gallery"].includes(String(command.source))) throw new SharedError("Görüntü kaynağı geçersiz.");
           if (!photo || !photo.length || photo.length > 25 * 1024 * 1024) throw new SharedError("Görüntü boyutu geçersiz.", 413);
           if (row && row.status !== "error") {
             // Durable capture IDs make ambiguous network retries harmless.
@@ -71,6 +91,7 @@ export class SharedSessionStore {
           this.db.prepare("INSERT OR REPLACE INTO photos VALUES(?,?)").run(command.id, photo);
           if (row) { row.status = "queued"; row.error = undefined; row.hasPhoto = true; row.checkMode = command.mode as "single" | "double"; }
           else session.rows.push(emptyRow(session.pcMap.length, command.id, command.mode as "single" | "double"));
+          session.rows.find(r=>r.id===command.id)!.captureSource=command.source === "gallery" ? "gallery" : "camera";
           break;
         }
         case "manual":
@@ -96,6 +117,18 @@ export class SharedSessionStore {
         case "retry":
           if (!row || row.status !== "error" || !row.hasPhoto) throw new SharedError("Bu satır yeniden okumaya uygun değil.", 409);
           row.status = "queued"; row.error = undefined; break;
+        case "reread": {
+          if (!row || row.status !== "done" || !row.hasPhoto || command.signature !== rowSignature(row, session))
+            throw new SharedError("Satır değişti veya kaynak fotoğrafı yok; yeniden okuma başlatılmadı.", 409);
+          if (session.rows.filter(r => r.status === "queued" || r.status === "reading").length >= MAX_PENDING)
+            throw new SharedError("Okuma kuyruğu dolu; tamamlanmasını bekleyin.", 429);
+          // An explicit reread may fill cleared cells, but populated teacher
+          // corrections remain authoritative when the new result merges.
+          row.edited = row.edited.filter(key => cellValue(row, key).trim() !== "");
+          row.confirmed = row.confirmed.filter(key => row.edited.includes(key));
+          row.metadataApproval = undefined; row.totalApproval = undefined;
+          row.status = "queued"; row.error = undefined; break;
+        }
         case "manual-complete":
           if (!row || row.status !== "error" || !cellKeys(session.pcMap.length).every(key => row.edited.includes(key)))
             throw new SharedError("Önce tüm kimlik, puan ve toplam alanlarını elle doldurun.");
@@ -165,7 +198,7 @@ export class SharedSessionStore {
       const state = this.snapshot(), row = state.session.rows.find(r => r.id === id);
       if (!row || row.status !== "reading") return;
       state.session.rows = state.session.rows.map(r => r.id !== id ? r : output
-        ? mergeReading(r, output) : { ...r, status: "error", error: error || "Okuma başarısız." });
+        ? reconcileRoster(mergeReading(r, output), state.session.roster) : { ...r, status: "error", error: error || "Okuma başarısız." });
       this.db.prepare("DELETE FROM leases WHERE id=? AND token=?").run(id, token);
       this.save(state);
     });

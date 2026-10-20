@@ -23,7 +23,7 @@ export async function sharedCommand(command: Record<string, unknown>): Promise<S
   const body = JSON.stringify(command);
   for (let attempt = 0; ; attempt++) {
     try {
-      return await responseSnapshot(await fetch("/api/shared", { method: "POST", headers: { "Content-Type": "application/json" },
+      return await responseSnapshot(await fetch(command.action === "roster" ? "/api/shared?action=roster" : "/api/shared", { method: "POST", headers: { "Content-Type": "application/json" },
         body, signal: AbortSignal.timeout(10_000) }));
     } catch (error) {
       // A lost acknowledgement is retried with the same operation ID; the server
@@ -32,8 +32,9 @@ export async function sharedCommand(command: Record<string, unknown>): Promise<S
     }
   }
 }
-export async function uploadCapture(job: { id: string; opId: string; examId: string; mode: string; blob: Blob }): Promise<SharedSnapshot> {
+export async function uploadCapture(job: { id: string; opId: string; examId: string; mode: string; source?: "camera" | "gallery"; blob: Blob }): Promise<SharedSnapshot> {
   const params = new URLSearchParams({ action: "capture", id: job.id, opId: job.opId, examId: job.examId, mode: job.mode });
+  params.set("source",job.source || "camera");
   return responseSnapshot(await fetch(`/api/shared?${params}`, { method: "POST", headers: { "Content-Type": job.blob.type || "image/jpeg" },
     body: job.blob, signal: AbortSignal.timeout(30_000) }));
 }

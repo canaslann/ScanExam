@@ -1,4 +1,5 @@
 import { detectPaperRegions } from "./paper-regions.ts";
+import { rapidScoreGrid, type Ruling } from "./rapid-detection.ts";
 
 /** Contrast/focus heuristic, not OCR confidence. Color image is never modified. */
 export function detectLivePaper(
@@ -6,20 +7,26 @@ export function detectLivePaper(
   width: number,
   height: number,
   questionCount: number,
+  rapid = false,
 ) {
+  let lines: Ruling[] = [], dark: Uint8Array | undefined;
   const boxes = detectPaperRegions(
     pixels,
     width,
     height,
     4,
-    undefined,
+    rapid ? (stage, value) => {
+      if(stage === "lines") lines = value as Ruling[];
+      if(stage === "mask") dark = (value as {dark:Uint8Array}).dark;
+    } : undefined,
     questionCount,
   );
+  const scoreBox = boxes?.scores || (rapid ? rapidScoreGrid(lines,dark,width,height,questionCount) : null);
   let edge = 0,
     count = 0,
     clipped = 0;
-  if (boxes)
-    for (const box of [boxes.student, boxes.scores]) {
+  if (scoreBox)
+    for (const box of boxes ? [boxes.student, scoreBox] : [scoreBox]) {
       for (
         let y = Math.max(1, Math.ceil(box.top + 3));
         y < Math.min(height - 1, box.top + box.height - 3);
@@ -39,7 +46,7 @@ export function detectLivePaper(
         }
     }
   return {
-    box: boxes?.scores || null,
+    box: scoreBox,
     acceptable: count > 0 && edge / count > 2 && clipped / count < 0.85,
     quality: count > 0 ? edge / count : 0,
   };

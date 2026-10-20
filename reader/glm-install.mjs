@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { createHash, randomUUID } from "node:crypto";
 import { pipeline } from "node:stream/promises";
 import { spawn } from "node:child_process";
+import { Readable } from "node:stream";
 
 const SOURCE_SHA = "24ca1840804a2aa3faeb2cadf31f628ec8bd48393cf1938c414f0e6cda81914a";
 async function digest(path, start = 0) {
@@ -84,7 +85,23 @@ export async function installGlmEot({ projectRoot, readerUrl, pullSource }) {
     console.log("GLM-OCR Q8/EOT kurulu ve doğrulandı; indirme yapılmadı."); return;
   }
   const modelRoot = join(projectRoot, "work", "reader", "models"), source = join(modelRoot, "blobs", `sha256-${SOURCE_SHA}`);
-  if (!existsSync(source)) await pullSource();
+  if (!existsSync(source)) {
+    await pullSource();
+    // Registry tags can move. Fetch the exact pinned source if the current tag
+    // no longer contains it; never weaken the checksum or patch other weights.
+    if (!existsSync(source)) {
+      console.log("Sabit SHA-256 ile doğrulanan GLM kaynak sürümü indiriliyor.");
+      await mkdir(join(modelRoot, "blobs"), { recursive: true });
+      const temporary = `${source}.${randomUUID()}.partial`;
+      try {
+        const response = await fetch(`https://registry.ollama.ai/v2/library/glm-ocr/blobs/sha256:${SOURCE_SHA}`);
+        if (!response.ok || !response.body) throw new Error(`Sabit GLM kaynağı indirilemedi: HTTP ${response.status}`);
+        await pipeline(Readable.fromWeb(response.body), createWriteStream(temporary, { flags: "wx" }));
+        if (await digest(temporary) !== SOURCE_SHA) throw new Error("Sabit GLM kaynak SHA-256 doğrulaması başarısız.");
+        await rename(temporary, source);
+      } catch (error) { await rm(temporary, { force: true }); throw error; }
+    }
+  }
   if (await digest(source) !== SOURCE_SHA) throw new Error("Resmî GLM kaynak SHA-256 değeri eşleşmedi; kurulum durduruldu.");
   const directory = join(projectRoot, "work", "reader", "glm-eot"); await mkdir(directory, { recursive: true });
   const destination = join(directory, "glm-ocr-eot-q8.gguf");

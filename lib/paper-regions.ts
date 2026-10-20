@@ -53,6 +53,7 @@ export function detectPaperLayout(
   channels = 4,
   debug?: (stage: string, geometry: unknown) => void,
   questionCount = 5,
+  adaptiveShadows = false,
 ): PaperLayout | null {
   if (
     !Number.isInteger(questionCount) ||
@@ -101,7 +102,7 @@ export function detectPaperLayout(
           integral[t * stride + l]) /
         ((r - l) * (b - t));
       dark[y * width + x] =
-        grayValues[y * width + x] < Math.max(110, Math.min(200, mean - 18))
+        grayValues[y * width + x] < Math.max(adaptiveShadows ? 20 : 110, Math.min(200, mean - 18))
           ? 1
           : 0;
     }
@@ -183,6 +184,8 @@ export function detectPaperLayout(
     }
     return chosen.sort((a, b) => a.y - b.y);
   };
+  debug?.("lines", lines);
+  debug?.("mask", { dark, width, height });
   const main = dedupe(
     lines.filter(
       (line) =>
@@ -253,7 +256,7 @@ export function detectPaperLayout(
     scoreLines[3].y - scoreLines[0].y > span * 0.15
   )
     return null;
-  const scoreColumns: number[] = [];
+  let scoreColumns: number[] = [];
   for (let x = scoreLines[0].left - 2; x <= scoreLines[0].right + 2; x++) {
     let hits = 0;
     const a = scoreLines[0].y + 7,
@@ -269,6 +272,19 @@ export function detectPaperLayout(
         hits++;
     if (hits / (b - a + 1) > 0.83 && !scoreColumns.some((old) => x - old < 6))
       scoreColumns.push(x);
+  }
+  // A handwritten vertical stroke can cross both score rows. Remove at most
+  // one such extra candidate, only when every required divider is actually
+  // present at a regular measured grid position. Never invent a missing line.
+  if (scoreColumns.length === questionCount + 3) {
+    const start = scoreColumns[1], end = scoreColumns.at(-1)!;
+    const step = (end - start) / questionCount;
+    const selected = Array.from({ length: questionCount + 1 }, (_, i) => {
+      const target = start + i * step;
+      return scoreColumns.slice(1).find(x => Math.abs(x - target) <= Math.max(2, step * 0.06));
+    });
+    if (selected.every((x): x is number => x !== undefined) && new Set(selected).size === selected.length)
+      scoreColumns = [scoreColumns[0], ...selected];
   }
   debug?.("scoreColumns", scoreColumns);
   // Label column plus configured score columns, with a real outer divider.
@@ -334,12 +350,12 @@ export function detectPaperLayout(
     topLine: Line,
     bottomLine: Line,
     inset = 0,
+    padding = 3,
   ): CropBox => {
     const ys = [x0, x1].map((x) => topLine.y + topLine.slope * (x - middle));
     const ends = [x0, x1].map(
       (x) => bottomLine.y + bottomLine.slope * (x - middle),
     );
-    const padding = 3;
     const x = Math.max(0, Math.floor(x0 + inset));
     const end = Math.min(width, Math.ceil(x1 - inset));
     const top = Math.max(0, Math.floor(Math.min(...ys) - padding));
@@ -350,11 +366,11 @@ export function detectPaperLayout(
     scoreCells: scoreColumns.slice(2).map((x, i) => box(scoreColumns[i + 1], x, scoreLines[1], scoreLines[2], 2)),
     writtenTotal: box(scoreColumns[1], scoreLines[0].right, scoreLines[2], scoreLines[3], 2),
     identity: {
-      fullName: box(studentLeft, studentRight, main[2], main[3], 2),
-      studentNumber: box(studentLeft, studentRight, main[3], main[4], 2),
+      fullName: box(studentLeft, studentRight, main[2], main[3], 2, 0),
+      studentNumber: box(studentLeft, studentRight, main[3], main[4], 2, 0),
       combined: box(studentLeft, studentRight, main[2], main[4], 2),
-      fullNameLabelled: box(courseRight, studentRight, main[2], main[3]),
-      studentNumberLabelled: box(courseRight, studentRight, main[3], main[4]),
+      fullNameLabelled: box(courseRight, studentRight, main[2], main[3], 0, 0),
+      studentNumberLabelled: box(courseRight, studentRight, main[3], main[4], 0, 0),
     },
     regions: {
     // Keep the upper form context/labels, not just the isolated handwriting.

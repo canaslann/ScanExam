@@ -40,7 +40,8 @@ export async function POST(request: Request) {
   try {
     authorize(request);
     const target = new URL(request.url), capture = target.searchParams.get("action") === "capture";
-    const limit = capture ? 25 * 1024 * 1024 : 128 * 1024;
+    const roster = target.searchParams.get("action") === "roster";
+    const limit = capture ? 25 * 1024 * 1024 : roster ? 2 * 1024 * 1024 : 128 * 1024;
     if (Number(request.headers.get("content-length") || 0) > limit) throw new SharedError("İstek boyutu sınırı aşıldı.", 413);
     const reader = request.body?.getReader();
     if (!reader) throw new SharedError("İstek verisi eksik.");
@@ -64,11 +65,12 @@ export async function POST(request: Request) {
       if (!["jpeg", "png", "webp"].includes(metadata.format || "") || !metadata.width || !metadata.height
         || metadata.width * metadata.height > 24_000_000) throw new SharedError("Görüntü biçimi/boyutu desteklenmiyor.");
       result = sharedStore().mutate({ action: "capture", id: target.searchParams.get("id"), opId: target.searchParams.get("opId"),
-        examId: target.searchParams.get("examId"), mode: target.searchParams.get("mode") }, bytes);
+        examId: target.searchParams.get("examId"), mode: target.searchParams.get("mode"), source:target.searchParams.get("source") ?? undefined }, bytes);
     } else {
       let command;
       try { command = JSON.parse(new TextDecoder().decode(bytes)); }
       catch { throw new SharedError("Tablo işlemi JSON biçiminde olmalı."); }
+      if (roster && command?.action !== "roster") throw new SharedError("Öğrenci listesi işlemi geçersiz.");
       result = sharedStore().mutate(command);
     }
     wakeSharedReader();

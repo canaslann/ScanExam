@@ -1,5 +1,5 @@
 import type { CheckMode } from "./reader-contract.ts";
-export type CaptureUpload = { id: string; opId: string; examId: string; mode: CheckMode; blob: Blob; created: number };
+export type CaptureUpload = { id: string; opId: string; examId: string; mode: CheckMode; source?: "camera" | "gallery"; blob: Blob; created: number };
 let database: Promise<IDBDatabase> | undefined;
 function open() {
   return database ??= new Promise<IDBDatabase>((resolve, reject) => {

@@ -1,4 +1,5 @@
 import * as XLSX from "xlsx";
+import type { RosterMatch } from "./student-roster.ts";
 
 export type PcCode = `PÇ${number}`;
 export const MAX_QUESTIONS = 30;
@@ -41,6 +42,7 @@ export type WorkbookExam = Omit<ExamState, "results"> & {
 };
 
 export type ScanDraft = {
+  rosterMatch?: RosterMatch;
   studentNumber: string;
   fullName: string;
   scores: string[];

@@ -9,18 +9,23 @@ import {
 } from "@/lib/capture-gate";
 import type { CropBox } from "@/lib/paper-regions";
 import PaperDetectorWorker from "@/lib/paper-detector.worker?worker";
+import { upperFormFrame } from "@/lib/camera-frame";
 
 export function LiveCamera({
   questionCount,
+  captureMode = "stable",
   enabled,
   onCapture,
 }: {
   questionCount: number;
+  captureMode?: "stable" | "rapid" | "manual";
   enabled: boolean;
   onCapture: (blob: Blob) => Promise<void>;
 }) {
   const videoRef = useRef<HTMLVideoElement>(null),
     gate = useRef(new CaptureGate());
+  const manualShot = useRef<(() => Promise<void>) | null>(null);
+  const [saving, setSaving] = useState(false);
   const captureRef = useRef(onCapture),
     enabledRef = useRef(enabled);
   const [active, setActive] = useState(false),
@@ -41,7 +46,7 @@ export function LiveCamera({
       flashTimer: ReturnType<typeof setTimeout> | undefined;
     let worker: Worker | undefined;
     const frames = new CaptureFrameBuffer<HTMLCanvasElement>();
-    gate.current.reset();
+    gate.current = captureMode === "rapid" ? new CaptureGate(1, 0) : new CaptureGate();
     const list = () =>
       navigator.mediaDevices
         .enumerateDevices()
@@ -96,6 +101,44 @@ export function LiveCamera({
           );
         }
       });
+      const persist = async (frame: HTMLCanvasElement) => {
+        setSaving(true);
+        try {
+          const blob = await new Promise<Blob>((resolve, reject) => frame.toBlob(
+            value => value ? resolve(value) : reject(new Error("Görüntü hazırlanamadı.")), "image/jpeg", 0.94));
+          if (disposed) return;
+          await captureRef.current(blob);
+          if (!disposed) {
+            setFlash(true);
+            setMessage("Bu cihazda kaydedildi · bilgisayara aktarım arka planda · sonraki kâğıda geçin.");
+            clearTimeout(flashTimer);
+            flashTimer = setTimeout(() => setFlash(false), 900);
+          }
+        } finally { if (!disposed) setSaving(false); }
+      };
+      let taking = false;
+      const snapshot = () => {
+        const box = upperFormFrame(video.videoWidth, video.videoHeight);
+        const frame = document.createElement("canvas");
+        frame.width = box.width;
+        frame.height = box.height;
+        frame.getContext("2d")!.drawImage(video, box.sourceX, box.sourceY,
+          box.sourceWidth, box.sourceHeight, 0, 0, box.width, box.height);
+        return frame;
+      };
+      manualShot.current = async () => {
+        if (taking || disposed || !enabledRef.current || !video.videoWidth) return;
+        taking = true;
+        try {
+          await persist(snapshot());
+        } catch (error) {
+          if (!disposed) setMessage(error instanceof Error ? error.message : "Fotoğraf kaydedilemedi.");
+        } finally { taking = false; }
+      };
+      if (captureMode === "manual") {
+        setMessage("Üst formdaki Adı Soyadı, Numarası ve Puan / Not tablosunu çerçeveye alın, Fotoğraf çek düğmesine basın.");
+        return;
+      }
       // Let Vite resolve the browser asset; RSC rewrites this component's import.meta.url to file://.
       worker = new PaperDetectorWorker();
       worker.onerror = () => {
@@ -120,28 +163,7 @@ export function LiveCamera({
           return;
         }
         // Keep a fixed color snapshot until analysis finishes; never capture a later camera frame.
-        const sourceWidth = Math.min(video.videoWidth, video.videoHeight / 0.6),
-          sourceHeight = sourceWidth * 0.6,
-          sourceX = (video.videoWidth - sourceWidth) / 2,
-          sourceY = (video.videoHeight - sourceHeight) / 2;
-        const frame = document.createElement("canvas");
-        frame.width = Math.min(1600, sourceWidth);
-        frame.height = Math.round(
-          (sourceHeight * frame.width) / sourceWidth,
-        );
-        frame
-          .getContext("2d")!
-          .drawImage(
-            video,
-            sourceX,
-            sourceY,
-            sourceWidth,
-            sourceHeight,
-            0,
-            0,
-            frame.width,
-            frame.height,
-          );
+        const frame = snapshot();
         const analysis = document.createElement("canvas");
         analysis.width = 800;
         analysis.height = Math.round((frame.height * 800) / frame.width);
@@ -182,25 +204,7 @@ export function LiveCamera({
           );
           if (state === "captured" && enabledRef.current) {
             try {
-              const blob = await new Promise<Blob>((resolve, reject) =>
-                captureFrame.toBlob(
-                  (value) =>
-                    value
-                      ? resolve(value)
-                      : reject(new Error("Görüntü hazırlanamadı.")),
-                  "image/jpeg",
-                  0.94,
-                ),
-              );
-              if (disposed) return;
-              await captureRef.current(blob);
-              if (!disposed) {
-                setFlash(true);
-                setMessage(
-                  "Görüntü kaydedildi · aktarım/OCR arka planda · sonraki kâğıda geçin.",
-                );
-                flashTimer = setTimeout(() => setFlash(false), 1600);
-              }
+              await persist(captureFrame);
             } catch (error) {
               if (!disposed) {
                 gate.current.reset();
@@ -213,7 +217,7 @@ export function LiveCamera({
               }
             }
           }
-          if (!disposed) timer = setTimeout(sample, CAPTURE_INTERVAL_MS);
+          if (!disposed) timer = setTimeout(sample, captureMode === "rapid" ? 90 : CAPTURE_INTERVAL_MS);
         };
         worker!.postMessage(
           {
@@ -221,6 +225,7 @@ export function LiveCamera({
             width: analysis.width,
             height: analysis.height,
             questionCount,
+            rapid: captureMode === "rapid",
           },
           [pixels.buffer],
         );
@@ -241,13 +246,14 @@ export function LiveCamera({
       disposed = true;
       clearTimeout(timer);
       clearTimeout(flashTimer);
+      manualShot.current = null;
       worker?.terminate();
       stream?.getTracks().forEach((track) => track.stop());
       navigator.mediaDevices?.removeEventListener("devicechange", list);
       document.removeEventListener("visibilitychange", hidden);
       if (videoElement) videoElement.srcObject = null;
     };
-  }, [active, device, questionCount]);
+  }, [active, device, questionCount, captureMode]);
   return (
     <div className="space-y-3">
       <div className="flex flex-wrap items-center gap-2">
@@ -274,7 +280,12 @@ export function LiveCamera({
             ))}
           </select>
         )}
-        {active && (
+        {active && captureMode === "manual" && (
+          <Button disabled={!enabled || saving} onClick={() => void manualShot.current?.()}>
+            <Camera className="size-4" />{saving ? "Kaydediliyor…" : "Fotoğraf çek"}
+          </Button>
+        )}
+        {active && captureMode !== "manual" && (
           <Button
             variant="ghost"
             onClick={() => gate.current.reset()}
@@ -320,6 +331,7 @@ export function LiveCamera({
       <details className="camera-hint text-xs leading-5">
         <summary>Tarama ipuçları</summary>
         <p>
+        {captureMode === "manual" && <span>Seri çekimde yalnız üst formu yakınlaştırın; isim, numara ve Puan / Not satırlarının tümü görünsün. Düğmeye basıldığında çerçevedeki alan kaydedilir; otomatik yakalama beklenmez. </span>}
         Yeşil tik görüntünün bu cihaza kaydedildiğini belirtir, okuma sonucu
         değildir. Aktarım bilgisayara arka planda yapılır. Kâğıdı tamamen
         çıkarıp yenisini tutun; üst üste değiştiriyorsanız “Sonraki kâğıda

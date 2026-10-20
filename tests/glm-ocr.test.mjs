@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { identityText, parseGlmScores, readGlmRegions } from "../lib/glm-ocr.ts";
+import { identityText, parseGlmScores, parseGlmDocument, readGlmRegions } from "../lib/glm-ocr.ts";
 import { readLocalPaper, warmLocalReader } from "../lib/local-reader.ts";
 const table = count => `<table><tr><td>Soru-PÇ İlişkisi</td>${Array.from({ length: count }, (_, i) => `<td>(S${i + 1})-PÇ${i % 2 ? 12 : 2}</td>`).join("")}</tr>
   <tr><td>Puan:</td>${Array(count).fill("<td>10</td>").join("")}</tr><tr><td>Not:</td><td colspan="${count}">78</td></tr></table>`;
@@ -17,7 +17,7 @@ test("GLM native tables preserve dynamic columns, repeated PÇ values, literal t
 });
 test("manual capture label typos retain literal scores only under an ordered question header", () => {
   const header = "<tr><td>Soru-PÇ ilişkisi</td><td>(S1)-PÇ2</td><td>(S2)-PÇ1</td><td>(S3)-PÇ3</td><td>(S4)-PÇ2</td><td>(S5)-PÇ4</td></tr>";
-  for (const [label, scores, total] of [["Poan:", ["7", "3", "2", "11", "13"], "36"], ["Punan", ["3", "2", "10", "8", "8"], "31"]]) {
+  for (const [label, scores, total] of [["Pam:", ["7", "3", "2", "11", "13"], "36"], ["Poan:", ["7", "3", "2", "11", "13"], "36"], ["Punan", ["3", "2", "10", "8", "8"], "31"]]) {
     const row = `<tr><td>${label}</td>${scores.map(value => `<td>${value}</td>`).join("")}</tr>`;
     const raw = `<table>${header}${row}<tr><td>Not:</td><td colspan="5">${total}</td></tr></table>`;
     const result = parseGlmScores(raw, 5);
@@ -47,7 +47,7 @@ test("GLM preparation is deduplicated, image-free and waits for a completed nati
     if (url.endsWith("/api/tags")) return Response.json({ models: [] });
     assert.ok(url.endsWith("/api/generate"));
     const input = JSON.parse(options.body);
-    assert.equal(input.images, undefined); assert.equal(input.prompt, undefined); assert.equal(input.options, undefined);
+    assert.equal(input.images, undefined); assert.equal(input.prompt, undefined); assert.deepEqual(input.options, { num_ctx: 4096, num_thread: 4 });
     assert.equal(input.keep_alive, "30m"); return Response.json({ done: true, done_reason: "load" });
   };
   await Promise.all([warmLocalReader(), warmLocalReader()]);
@@ -225,3 +225,109 @@ test("typed field gates reject digits in names and letters in numeric fields, pr
     for (const field of ["fullName", "studentNumber", "s1", "writtenTotal"]) assert.ok(result.reviewFields.includes(field));
   }
 });
+
+
+test("missing GLM weights report installation instructions and allow preparation after repair", async t => {
+  const originalFetch = globalThis.fetch, originalModel = process.env.SCANEXAM_MODEL;
+  t.after(() => { globalThis.fetch = originalFetch; if (originalModel === undefined) delete process.env.SCANEXAM_MODEL; else process.env.SCANEXAM_MODEL = originalModel; });
+  process.env.SCANEXAM_MODEL = "glm-ocr-eot:q8_0";
+  let installed = false;
+  globalThis.fetch = async url => url.endsWith("/api/tags") ? Response.json({ models: [] })
+    : installed ? Response.json({ done: true }) : Response.json({ error: "model not found" }, { status: 404 });
+  await assert.rejects(warmLocalReader(), error => error.status === 503 && /reader:setup/.test(error.message) && /Fotoğraf korunuyor/.test(error.message));
+  installed = true;
+  await warmLocalReader();
+});
+
+
+const documentText = (count = 5) => `INONU UNIVERSITESI
+Adı Soyadı
+İpek Örnek
+Numarası
+00001234567
+Dersin Kodu ve Adı
+BILM374-2022-YAPAY ZEKA
+Sınav Kuralları
+${Array.from({ length: count }, (_, i) => `(S${i + 1})-PÇ${i % 2 ? 12 : 2}`).join("\n")}
+Puan: ${Array(count).fill("10").join(" ")}
+Not: 78
+SINAV SORULARI
+1. Bir sorunun cevabı 42 olarak verilmiştir.`;
+
+test("free document reading extracts labelled fields and exact dynamic score counts without deriving totals", () => {
+  for (const count of [1, 3, 5, 7, 12, 30]) {
+    const result = parseGlmDocument(documentText(count), count);
+    assert.equal(result.fullName, "İpek Örnek");
+    assert.equal(result.studentNumber, "00001234567");
+    assert.equal(result.scores.length, count);
+    assert.ok(result.scores.every(value => value === "10"));
+    assert.equal(result.writtenTotal, "78");
+    assert.equal(result.pcMap[0], "PÇ2");
+    assert.ok(result.reviewFields.includes("s1"));
+    assert.equal(result.readingStrategy, "full-table");
+  }
+  const invalid = parseGlmDocument(documentText().replace("İpek Örnek", "İpek K04").replace("00001234567", "0000L234567").replace("10 10 10 10 10", "10 10 10 10"), 5);
+  assert.equal(invalid.fullName, ""); assert.equal(invalid.studentNumber, "");
+  assert.deepEqual(invalid.alternatives.fullName, ["İpek K04"]);
+  assert.ok(invalid.scores.every(value => value === ""));
+  assert.equal(invalid.writtenTotal, "78");
+  const ambiguous = parseGlmDocument(documentText() + "\nPuan: 1 2 3 4 5\nNot: 15", 5);
+  assert.ok(ambiguous.scores.every(value => value === "")); assert.equal(ambiguous.writtenTotal, "");
+});
+
+test("missing geometric cells submit the complete document with a document token budget", async () => {
+  const requests = [];
+  const out = await readGlmRegions({ image: "old-strip", documentImage: "complete-page" }, 5, async (image, prompt, maxTokens) => {
+    requests.push({ image, prompt, maxTokens }); return documentText();
+  });
+  assert.equal(requests.length, 1);
+  assert.equal(requests[0].image, "complete-page");
+  assert.equal(requests[0].prompt, "Text Recognition:");
+  assert.ok(requests[0].maxTokens >= 1800);
+  assert.equal(out.fullName, "İpek Örnek");
+});
+
+
+test("batch score-row checks accept exact numeric columns only and otherwise retain cell checks", async () => {
+  for (const rowText of ["10 10 10 10 10", "10 10 10 10", "10 10 ten 10 10"]) {
+    const paper = { image: "full", regions: { scores: "scores", course: "course", student: "student" },
+      identity: { fullNameZoom: "name", fullNameLabelled: "name-labelled", studentNumberZoom: "number", studentNumberLabelled: "number-labelled" },
+      scoreRowImage: "score-row", scoreCells: Array.from({ length: 5 }, (_, i) => ({ color: `cell-${i}`, padded: `padded-${i}` })) };
+    const requests = [];
+    const out = await readGlmRegions(paper, 5, async image => {
+      requests.push(image);
+      if (image === "scores") return table(5).replace(">78</td>", ">50</td>");
+      if (image === "score-row") return rowText;
+      if (image.startsWith("cell-") || image.startsWith("padded-")) return "10";
+      if (image.startsWith("name")) return "İpek Örnek";
+      if (image.startsWith("number")) return "00001234567";
+      return "BILM374-2022-YAPAY ZEKA";
+    });
+    assert.deepEqual(out.scores, Array(5).fill("10"));
+    assert.equal(requests.filter(image => /^(cell|padded)-/.test(image)).length, rowText === "10 10 10 10 10" ? 0 : 10);
+  }
+});
+
+
+test("row agreement does not suppress cell checks when the independent written total is missing or inconsistent", async () => {
+  for (const total of ["49", ""]) {
+    let cellReads = 0;
+    const p = { image: "full", regions: { scores: "scores", course: "course", student: "student" },
+      identity: { fullNameZoom: "name", fullNameLabelled: "name-labelled", studentNumberZoom: "number", studentNumberLabelled: "number-labelled" },
+      scoreRowImage: "score-row", scoreCells: Array.from({ length: 5 }, (_, i) => ({ color: `cell-${i}`, padded: `padded-${i}` })) };
+    const out = await readGlmRegions(p, 5, async image => {
+      if (image === "scores") return table(5).replace(">78</td>", `>${total}</td>`);
+      if (image === "score-row") return "10 10 10 10 10";
+      if (/^(cell|padded)-/.test(image)) { cellReads++; return "10"; }
+      if (image.startsWith("name")) return "İpek Örnek";
+      if (image.startsWith("number")) return "00001234567";
+      return "BILM374-2022-YAPAY ZEKA";
+    });
+    assert.equal(cellReads, 10); assert.equal(out.writtenTotal, total);
+    assert.deepEqual(out.scores, Array(5).fill("10"));
+  }
+});
+
+test('measured cells retain Pun row values despite misread printed question indices',()=>{const raw=table(5).replace('Puan:','Pun:').replace(/\(S\d+\)/g,'(S0)');assert.deepEqual(parseGlmScores(raw,5).scores,Array(5).fill(''));const measured=parseGlmScores(raw,5,true);assert.deepEqual(measured.scores,Array(5).fill('10'));assert.ok(measured.uncertainFields.includes('pcMap'));assert.deepEqual(parseGlmScores(raw,4,true).scores,Array(4).fill(''));});
+
+test('only identical repeated multi-digit Not literals are recovered without arithmetic',()=>{for(const [literal,expected] of [['70 70','70'],['70 78',''],['7 7',''],['70 70 70','70']]){const out=parseGlmDocument(table(3).replace('>78<',`>${literal}<`),3);assert.equal(out.writtenTotal,expected);assert.deepEqual(out.alternatives.writtenTotal,[literal]);assert.ok(out.reviewFields.includes('writtenTotal'));}});

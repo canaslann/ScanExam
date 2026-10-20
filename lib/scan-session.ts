@@ -8,6 +8,7 @@ import {
   type ScanOutput,
 } from "./exam.ts";
 import { parseScore, sumScores, type CheckMode } from "./reader-contract.ts";
+import { matchRoster, validateRosterStudents, type StudentRoster } from "./student-roster.ts";
 
 export type CellKey =
   | "fullName"
@@ -22,12 +23,14 @@ export type ScanRow = {
   edited: CellKey[];
   confirmed: CellKey[];
   checkMode: CheckMode;
+  captureSource?: "camera" | "gallery";
   error?: string;
   hasPhoto: boolean;
   metadataApproval?: string;
   totalApproval?: string;
 };
 export type ScanSession = {
+  roster?: StudentRoster;
   version: 2;
   courseCode: string;
   courseName: string;
@@ -115,6 +118,12 @@ export function mergeReading(row: ScanRow, output: ScanOutput): ScanRow {
     merged = editCell(merged, key, cellValue(row, key));
   return merged;
 }
+/** Identity edits/approvals belong to the teacher; a roster never overwrites them. */
+export function reconcileRoster(row: ScanRow, roster?: StudentRoster): ScanRow {
+  if (row.status !== "done" || ["fullName", "studentNumber"].some(key =>
+    row.edited.includes(key as CellKey) || row.confirmed.includes(key as CellKey))) return row;
+  return { ...row, draft: matchRoster(row.draft, roster) };
+}
 export function validCell(row: ScanRow, key: CellKey): boolean {
   const value = cellValue(row, key)?.trim();
   if (key === "fullName") return Boolean(value && value.length >= 2);
@@ -189,6 +198,11 @@ export function cellState(
       color: "green",
       reason: "Kullanıcı kontrol etti/düzenledi; doğruluk garantisi değildir.",
     };
+  if ((key === "fullName" || key === "studentNumber") && session.roster
+    && row.draft.rosterMatch?.rosterId === session.roster.id && row.draft.rosterMatch.status === "matched"
+    && row.draft.rosterMatch.student?.fullName === row.draft.fullName
+    && row.draft.rosterMatch.student?.studentNumber === row.draft.studentNumber)
+    return { color: "green", reason: "Yüklenen Excel öğrenci listesiyle eşleşti; özgün okuma alternatiflerde saklanıyor." };
   if (key === "fullName" || key === "studentNumber")
     return {
       color: "yellow",
@@ -310,6 +324,11 @@ export function restoreSession(raw: unknown, resumeReading = true): ScanSession 
     !Array.isArray(value.rows)
   )
     throw new Error("Kayıt biçimi geçersiz; mevcut kayıt silinmedi.");
+  if (value.roster) {
+    if (typeof value.roster.id !== "string" || typeof value.roster.fileName !== "string"
+      || value.roster.fileName.length > 200) throw new Error("Öğrenci listesi kaydı geçersiz.");
+    validateRosterStudents(value.roster.students);
+  }
   const ids = new Set<string>();
   for (const row of value.rows) {
     if (
@@ -319,6 +338,7 @@ export function restoreSession(raw: unknown, resumeReading = true): ScanSession 
       typeof row.createdAt !== "string" ||
       !["queued", "reading", "done", "error"].includes(row.status) ||
       !["single", "double"].includes(row.checkMode) ||
+      (row.captureSource!==undefined && !["camera","gallery"].includes(row.captureSource)) ||
       typeof row.hasPhoto !== "boolean" ||
       !Array.isArray(row.edited) ||
       !Array.isArray(row.confirmed) ||

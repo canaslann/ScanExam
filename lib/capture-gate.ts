@@ -5,6 +5,12 @@ export const CAPTURE_STABLE_MS = 500;
 
 /** Geometry is not recognition confidence. Require stable detections, then latch until removal. */
 export class CaptureGate {
+  private readonly requiredSamples: number;
+  private readonly stableMs: number;
+  constructor(requiredSamples = 3, stableMs = CAPTURE_STABLE_MS) {
+    this.requiredSamples = requiredSamples;
+    this.stableMs = stableMs;
+  }
   private previous: CropBox | null = null;
   private stableSince = 0;
   private samples = 0;
@@ -56,7 +62,7 @@ export class CaptureGate {
     }
     this.previous = box;
     this.samples++;
-    if (this.samples >= 3 && now - this.stableSince >= CAPTURE_STABLE_MS) {
+    if (this.samples >= this.requiredSamples && now - this.stableSince >= this.stableMs) {
       this.latched = true;
       return "captured";
     }

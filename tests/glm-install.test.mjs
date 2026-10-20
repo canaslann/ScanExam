@@ -1,9 +1,9 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { mkdtemp, readFile, writeFile, rm } from "node:fs/promises";
+import { mkdtemp, readFile, writeFile, rm, readdir } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { patchGlmEot } from "../reader/glm-install.mjs";
+import { patchGlmEot, installGlmEot } from "../reader/glm-install.mjs";
 const u32 = value => { const bytes = Buffer.alloc(4); bytes.writeUInt32LE(value); return bytes; };
 const u64 = value => { const bytes = Buffer.alloc(8); bytes.writeBigUInt64LE(BigInt(value)); return bytes; };
 const string = value => Buffer.concat([u64(Buffer.byteLength(value)), Buffer.from(value)]);
@@ -34,4 +34,21 @@ test("EOT metadata-only installer keeps tensor descriptors/data and refuses over
   await assert.rejects(patchGlmEot(destination, join(directory, "twice.gguf")), /metadata/);
   await writeFile(source, fixture("no-token").bytes);
   await assert.rejects(patchGlmEot(source, join(directory, "bad.gguf")), /metadata/);
+});
+
+
+test("moved registry tags use the pinned source and reject mismatched downloaded weights", async t => {
+  const directory = await mkdtemp(join(tmpdir(), "scanexam-glm-pinned-"));
+  const originalFetch = globalThis.fetch;
+  t.after(async () => { globalThis.fetch = originalFetch; await rm(directory, { recursive: true }); });
+  const requests = [];
+  let pulled = false;
+  globalThis.fetch = async url => {
+    requests.push(url);
+    return url.endsWith("/api/tags") ? Response.json({ models: [] }) : new Response("incorrect weights");
+  };
+  await assert.rejects(installGlmEot({ projectRoot: directory, readerUrl: "http://127.0.0.1:11435", pullSource: async () => { pulled = true; } }), /SHA-256/);
+  assert.equal(pulled, true);
+  assert.equal(requests[1], "https://registry.ollama.ai/v2/library/glm-ocr/blobs/sha256:24ca1840804a2aa3faeb2cadf31f628ec8bd48393cf1938c414f0e6cda81914a");
+  assert.deepEqual(await readdir(join(directory, "work", "reader", "models", "blobs")), []);
 });
