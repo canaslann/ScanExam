@@ -6,6 +6,7 @@ import {
 } from "./scan-session.ts";
 import { validPcCode, validQuestionCount, type ScanOutput } from "./exam.ts";
 import { validateRosterStudents } from "./student-roster.ts";
+import { readerChoice } from "./reader-choice.ts";
 
 export type SharedSnapshot = { revision: number; examId: string; paused: boolean; session: ScanSession };
 export class SharedError extends Error {
@@ -77,6 +78,9 @@ export class SharedSessionStore {
           break;
         }
         case "capture": {
+          let selectedReader;
+          try { selectedReader = readerChoice(command.reader); }
+          catch (error) { throw new SharedError((error as Error).message); }
           if (!uuid(command.id) || !["single", "double"].includes(String(command.mode))) throw new SharedError("Tarama bilgisi geçersiz.");
           if(command.source!==undefined && !["camera","gallery"].includes(String(command.source))) throw new SharedError("Görüntü kaynağı geçersiz.");
           if (!photo || !photo.length || photo.length > 25 * 1024 * 1024) throw new SharedError("Görüntü boyutu geçersiz.", 413);
@@ -92,6 +96,7 @@ export class SharedSessionStore {
           if (row) { row.status = "queued"; row.error = undefined; row.hasPhoto = true; row.checkMode = command.mode as "single" | "double"; }
           else session.rows.push(emptyRow(session.pcMap.length, command.id, command.mode as "single" | "double"));
           session.rows.find(r=>r.id===command.id)!.captureSource=command.source === "gallery" ? "gallery" : "camera";
+          session.rows.find(r=>r.id===command.id)!.reader = selectedReader;
           break;
         }
         case "manual":

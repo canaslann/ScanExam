@@ -1,7 +1,8 @@
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { SharedSessionStore } from "./shared-session.ts";
-import { readLocalPaper, warmLocalReader } from "./local-reader.ts";
+import { warmLocalReader } from "./local-reader.ts";
+import { readSelectedPaper } from "./selected-reader.ts";
 import { prepareServerPaper } from "./paper-preparation.ts";
 import { readWithBusyRetry } from "./read-queue.ts";
 
@@ -32,7 +33,8 @@ export function wakeSharedReader() {
         if (snapshot.paused || db.activeReading() || !snapshot.session.rows.some(row => row.status === "queued" || row.status === "reading")) return;
         // An idle model may have been unloaded. Do not charge weight loading to
         // an individual paper's 120 second recognition deadline.
-        try { await warmLocalReader(); }
+        const next = snapshot.session.rows.find(row => row.status === "queued" || row.status === "reading");
+        try { if (next?.reader !== "qwen") await warmLocalReader(); }
         catch (error) {
           const failed = db.claim();
           if (failed) db.finish(failed.row.id, failed.token, undefined,
@@ -48,8 +50,10 @@ export function wakeSharedReader() {
         }, 1000);
         try {
           if (!job.photo) throw new Error("Kaynak fotoğraf bulunamadı; yeniden tarayın.");
-          const paper = await prepareServerPaper(job.photo, job.row.draft.scores.length, true, job.row.captureSource === "gallery");
-          const result = await readWithBusyRetry(() => readLocalPaper(paper.image, job.row.checkMode, controller.signal,
+          const choice = job.row.reader || "glm";
+          const paper = choice === "qwen" ? { image: Buffer.from(job.photo).toString("base64") }
+            : await prepareServerPaper(job.photo, job.row.draft.scores.length, true, job.row.captureSource === "gallery");
+          const result = await readWithBusyRetry(() => readSelectedPaper(choice, paper.image, job.row.checkMode, controller.signal,
             paper.regions, paper.compactImage, job.row.draft.scores.length, paper), controller.signal, () => undefined);
           db.finish(job.row.id, job.token, result);
         } catch (error) {

@@ -5,6 +5,7 @@ import type { SharedSnapshot } from "@/lib/shared-session";
 import { getSharedSnapshot, sharedCommand, uploadCapture } from "@/lib/shared-client";
 import { pendingCaptures, removeCapture, saveCapture, type CaptureUpload } from "@/lib/capture-outbox";
 import type { CheckMode } from "@/lib/reader-contract";
+import type { ReaderChoice } from "@/lib/reader-choice";
 
 export function useSharedScan() {
   const [session, setSession] = useState<ScanSession>(newSession), sessionRef = useRef(session);
@@ -91,10 +92,10 @@ export function useSharedScan() {
     void upload();
     return () => { disposed = true; clearTimeout(timer); };
   }, [apply, uploadTick]);
-  const capture = async (blob: Blob, mode: CheckMode, replacementId?: string, source: "camera" | "gallery" = "camera") => {
+  const capture = async (blob: Blob, mode: CheckMode, replacementId?: string, source: "camera" | "gallery" = "camera", reader: ReaderChoice = "glm") => {
     if (!base.current || !ready) throw new Error("Bilgisayardaki ortak tablo hazır değil.");
     if (!blob.size || blob.size > 25 * 1024 * 1024) throw new Error("Görüntü boş veya 25 MB sınırını aşıyor.");
-    const job: CaptureUpload = { id: replacementId || crypto.randomUUID(), opId: crypto.randomUUID(), examId: base.current.examId, mode, source, blob, created: Date.now() };
+    const job: CaptureUpload = { id: replacementId || crypto.randomUUID(), opId: crypto.randomUUID(), examId: base.current.examId, mode, reader, source, blob, created: Date.now() };
     await saveCapture(job);
     if (alive.current) { setUploads(value => value + 1); setUploadTick(value => value + 1); }
   };

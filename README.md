@@ -1,199 +1,211 @@
-# Sınav Tarayıcı
+# Scan Exam — Sınav Tarayıcı
 
-Telefon/webcam ile üst formu otomatik yakalar. Bilgisayardaki **GLM-OCR Q8/EOT** modeli sırayla okur; sonuçlar telefon ve bilgisayarın ortak, düzenlenebilir tablosunda görünür. Soru sayısı ve her sorunun PÇ eşleşmesi değişkendir. Excel çıktısı korunmuştur.
+Telefon, webcam veya galeri fotoğraflarındaki sınav üst formunu okur; öğrenci bilgileri, soru puanları ve yazılı toplamı ortak, düzenlenebilir tabloda gösterir. Sonuçlar Excel'e aktarılır. Okuma bilgisayarda yerel çalışır.
 
-## Kurulum
+Arayüzde iki ana okuyucu seçilebilir: **GLM-OCR** ve **Qwen3.5-9B Q8**. Soru sayısı **1–30**, her sorunun PÇ eşleşmesi **PÇ1–PÇ99** arasında dinamiktir. Aynı PÇ birden fazla soruya atanabilir.
 
-Windows x64, Node.js 22.18+ (önerilen 24):
+## Gereksinimler
 
-```bash
-npm install
+- Otomatik model kurulumu için **Windows x64**.
+- **Node.js 24 önerilir**; desteklenen en düşük sürüm `22.18.0`. Node.js ile gelen npm ve Git.
+- İlk bağımlılık, motor ve model indirmeleri için internet bağlantısı.
+- Kamera için güncel Chrome, Edge veya Safari; telefonda güvenilir HTTPS gerekir.
+- Bütün modelleri kurarken indirmeler, açılmış motor ve model kopyaları için yaklaşık **25–30 GB boş disk alanı** ayırın.
+
+Qwen için hedef sistem **RTX 3090 / 24 GB VRAM ve 32 GB RAM**. Daha küçük GPU'da kullanılabilir VRAM'e sığan katmanlar GPU'da, kalanlar RAM/CPU'da çalışabilir; toplam belleğin yeterli olması gerekir ve okuma yavaşlayabilir. GPU ve RAM bellekleri tek bir eşdeğer hızlı bellek havuzu değildir. GLM-OCR daha hafif seçenektir.
+
+## Yeni bilgisayarda kurulum — iki model birlikte
+
+PowerShell'de:
+
+```powershell
+git clone https://github.com/canaslann/ScanExam.git
+cd ScanExam
+npm ci
+npm run reader:setup:all
+npm run dev
+```
+
+Bilgisayarda **http://localhost:5173** adresini açın. Canlı tarama bölümündeki **Okuma modeli** alanından GLM-OCR veya Qwen3.5-9B seçin.
+
+`reader:setup:all` şunları hazırlar:
+
+| Bileşen | Görevi | Yaklaşık indirme |
+|---|---|---:|
+| Ollama `v0.35.0` | Proje içindeki yerel motor | 1,46 GB arşiv |
+| `glm-ocr-eot:q8_0` | Varsayılan GLM-OCR okuyucu | 1,59 GB kaynak paket; ek yerel EOT kopyası |
+| `qwen3.5:4b` | Mevcut GLM akışının yardımcı kimlik/alan okuyucusu | 3–4 GB |
+| `qwen3.5:9b-q8_0` | Bağımsız ikinci ana okuyucu | 10 GB |
+
+4B yardımcı model arayüzde üçüncü bir ana seçenek oluşturmaz. Qwen3.5-9B seçeneği tüm alanları kendisi okur; GLM veya 4B yardımcı modeli çağırmaz.
+
+Motor ve modeller `work/reader/` altında tutulur. Global Ollama kurulması veya ekran kartı/CPU paylaşımının elle ayarlanması gerekmez. Motor arşivi SHA-256 ile doğrulanır. GLM kurulumu sabit SHA-256 kaynak sürümünü kullanır; EOT kopyasında yalnız bitiş işareti metadata'sı eklenir, tensor verileri doğrulanır. Kurulu yardımcı/Qwen modelleri yeniden indirilmez; mevcut GLM alias'ı doğrulanır. Model kurulumu sınav fotoğraflarını göndermez.
+
+İlk model yüklemesi okuma öncesinde ek bekleme oluşturabilir. Uygulamanın açılması tek başına modelin kurulu olduğu anlamına gelmez; seçili okuyucunun durumunu **Okuyucuyu kontrol et** ile görün.
+
+## Modelleri ayrı kurma
+
+Daha hafif başlangıç için:
+
+```powershell
+npm ci
 npm run reader:setup
 npm run dev
 ```
 
-Bilgisayarda `http://localhost:5173` açın. OCR telefonda değil bu bilgisayarda çalışır; GPU varsa motor otomatik kullanır, yoksa CPU'ya geçer. Ofis bilgisayarlarında hız garantisi verilmez; hedef donanımda ölçün.
+Bu komut yalnız mevcut GLM-OCR kurulumunu yapar. Mevcut GLM kimlik desteğini eklemek için:
 
-İlk kurulum SHA-256 doğrulamalı Ollama v0.35.0 Windows paketini (~1,46 GB) ve GLM-OCR Q8 paketini (~1,59 GB) indirir. Kuruluysa indirme yapılmaz. `glm-ocr-eot:q8_0` alias'ı sabit SHA-256 ile doğrulanan kaynak GGUF'ye yalnız EOT metadata ekler. Tensor baytları/göreli konumları korunur, veri özetleri karşılaştırılır; kaynak dosya değiştirilmez. Arşiv, açılmış motor, kaynak model, EOT kopyası ve Ollama deposu ayrıca disk alanı gerektirir. `work/` Git dışında kalır.
+```powershell
+npm run reader:setup:identity
+```
 
-- `SCANEXAM_MODEL`: varsayılan `glm-ocr-eot:q8_0`; `qwen3.5:4b` eski akışı açıkça seçer. Sessiz model düşürme yok.
-- `SCANEXAM_READER_URL`: yalnız HTTP loopback; varsayılan `http://127.0.0.1:11435`. Bulut etiketi kabul edilmez.
-- `SCANEXAM_READER_THREADS`: isteğe bağlı 1–64; varsayılan motorun seçimi.
-- `SCANEXAM_DATA_DIR`: ortak veritabanı dizini; varsayılan `work/shared`. Dev ve telefon uygulaması **aynı dizini** kullanmalı.
+Bağımsız Qwen seçeneğini sonradan eklemek için:
 
-`npm run dev` / `npm start` motoru başlatmayı dener; model için `reader:setup` gerekir. Üretimde `npm run build`, ardından `npm start`. Yalnız statik barındırma yeterli değildir; bilgisayar ve Node.js sunucusu açık kalmalıdır.
+```powershell
+npm run reader:setup:qwen
+```
 
-## Telefona sertifika kurmadan HTTPS
+Modeli **arayüzden seçin**; iki seçenek arasında geçmek için ortam değişkeni ayarlamanız gerekmez. Eski bir kurulumda `SCANEXAM_MODEL` elle ayarlanmışsa varsayılan GLM yolunu etkileyebilir; standart kurulumda bu değişkeni ayarlamayın.
 
-Telefon kamerası güvenilir HTTPS ister; `http://BILGISAYAR_IP:5173` uygun değildir. Güncel Safari/Chrome/Edge, IndexedDB ve kamera API'si gerekir. Web Locks artık zorunlu değildir; kuyruğu bilgisayar yönetir. Normal tarayıcı kullanın, kamera iznini verin.
+## Üretim sürümünü çalıştırma
 
-Fotoğraf, öğrenci kimliği/notları ve sonuç trafiğinin **Cloudflare üzerinden geçmesine izin varsa**:
+```powershell
+npm run build
+npm start
+```
 
-```bash
+Üretim uygulaması varsayılan olarak **http://localhost:3000** adresindedir. Bilgisayar, yerel okuyucu ve Node.js uygulaması açık kalmalıdır. Statik dosya barındırma tek başına yeterli değildir.
+
+Geliştirme sunucusunda kullanıcı girişi yoktur; doğrudan geliştirme portunu internete açmayın. Telefon paylaşımı için aşağıdaki parolalı HTTPS akışını kullanın.
+
+## Telefonda kamera kullanma
+
+Telefon kamerası güvenilir HTTPS ister. `http://BILGISAYAR_IP:5173` adresi bunun için yeterli değildir.
+
+Fotoğraf, öğrenci bilgileri ve sonuç trafiğinin Cloudflare üzerinden geçmesine izin verilen geçici kullanımda:
+
+```powershell
 npm run phone
 ```
 
-Resmî `cloudflared` 2026.10.0 (~55 MB) ilk seferde indirilip sabit SHA-256 ile doğrulanır. Yeni OCR modeli indirilmez. Üretim derlenir, ayrı uygulama/parola geçidi yalnız loopback'te açılır; dev sunucusu korunur. Telefon sertifikası, sistem servisi veya güvenlik duvarı kuralı kurulmaz.
+Bu komut uygulamayı derler; proje içindeki doğrulanmış `cloudflared` paketini ilk seferde indirir ve geçici HTTPS adresini terminalde gösterir. Telefonu bu adrese bağlayın. Model indirmez; modelleri önce yukarıdaki kurulum komutlarıyla hazırlayın.
 
-Terminalde çıkan HTTPS adresini telefonda açın. Varsayılan kullanıcı adı ve parola **scanexam**. Bu kolay parola yalnız yetkililerle paylaşılan geçici test içindir; gerçek verilerle kalıcı kullanımda güçlü kimlik doğrulaması gerekir. `SCANEXAM_PHONE_PASSWORD` (en az 8 karakter) ile değiştirilebilir. Bilgiler `work/phone/telefon-baglantisi.txt` içinde, Git dışında kalır.
+Varsayılan geçici kullanıcı adı ve parola **scanexam**. Gerçek kullanımda başlatmadan önce daha güçlü bir parola belirleyin:
 
-Parola bütün sayfa, Worker, statik dosya ve API isteklerinde uygulanır. Aynı kaynak/Host denetimi korunur; model portu internete açılmaz. `npm run phone:stop` yalnız telefon uygulaması/tünelini kapatır; dev/model korunur. Yeniden açılınca geçici adres değişir. **Bilgisayara aktarılmış ortak tablo/fotoğraflar korunur ve yeni adresten görünür.** Telefonda aktarılmamış görüntü varsa bağlantıyı kapatmadan tamamlayın: eski origin'in cihaz deposu yeni adrese taşınmaz. Quick Tunnel kalıcı kurumsal dağıtım değildir.
+```powershell
+$env:SCANEXAM_PHONE_PASSWORD = 'buraya-en-az-8-karakterli-guclu-bir-parola-yazin'
+npm run phone
+```
 
-Geliştirmede telefonda da güvenilen, adresinize uygun sertifika varsa `SCANEXAM_HTTPS_CERT` ve `SCANEXAM_HTTPS_KEY` birlikte tanımlanabilir; doğrulama atlanmaz. Kendi üretim HTTPS vekilinizde özgün Host korunmalı ve `SCANEXAM_PUBLIC_ORIGIN` tam HTTPS origin olmalıdır. Gelen forwarded başlıklarına güvenilmez. Dev portu kullanıcı hesabıyla korunmaz; güvenilen ağ dışında yayınlamayın.
+Kullanıcı adı `scanexam` kalır. Bağlantı bilgileri yerel `work/phone/telefon-baglantisi.txt` dosyasına yazılır. Adres/parola geçidi tüm uygulama/API isteklerine uygulanır; model portu internete açılmaz.
 
-## Tarama, ortak tablo ve Excel
+Kapatmak için:
 
-Üst çubuktaki **Açık / Koyu / Sistem** seçenekleri görünüm temasını değiştirir. Varsayılan Sistem, cihazın açık/koyu tercihine uyar; seçiminiz bu tarayıcıda saklanır. Sınav düzeni, canlı tarama ve sonuçlar bağlantıları ilgili bölüme götürür.
+```powershell
+npm run phone:stop
+```
 
-1. Ders, **1–30 soru** ve bağımsız **PÇ1–PÇ99** değerlerini ayarlayın. Aynı PÇ birden çok soruya atanabilir. İlk satırdan sonra soru sayısı kilitlenir. Basılı ders/PÇ okumasındaki fark sessizce ayarı değiştirmez.
-2. Üst form ve **Puan / Not satırlarının tamamını** hizalayın. En az üç uygun kare ve 500 ms sabitlik gerekir; analiz aralığı 180 ms. Odak/analiz/kayıt ek süre getirir: gerçek telefon süresi garantisi değildir. Aynı sabitlik aralığının en iyi kenar/kontrast karesi seçilir; bu OCR güveni değildir. Renk korunur. Kırmızı/siyah kalem başarısı ışık, kontrast ve el yazısına bağlıdır.
-3. **Yeşil tik = görüntü bu cihazın IndexedDB aktarım kuyruğuna kalıcı kaydedildi.** Aktarım/OCR arka plandadır; modeli beklemeden sonraki kâğıda geçin. Tutulan kâğıt tekrar yakalanmaz. Kâğıdı çıkarın veya üst üste değişimde “Sonraki kâğıda hazırla”yı kullanın; yanlış kullanım mükerrer kayıt yaratabilir.
-4. Aktarılan fotoğraf/satır bilgisayarda atomik saklanır. Bilgisayar sırayla okur; telefon kapansa da **aktarılmış** işler sürer. Gizlenen sekmede kamera kapanır. Aktarılmamış görüntüler cihazda korunur ve tekrar denenir; aktarım bitene kadar sekmeyi açık tutun.
-5. Aynı bilgisayara bağlı cihazlar yaklaşık bir saniyelik sorgularla aynı tabloyu görür. Farklı hücre düzenlemeleri birleşir; aynı hücrede eski değere göre yazma reddedilir. Model, okuma sırasında elle yapılan düzenlemeyi ezmez.
-6. Sarı hücreyi kaynak fotoğrafla karşılaştırın; düzenleyin veya “Kontrol” ekranından onaylayın. Yeşil = şüphe bildirilmemesi veya kontrol/düzenleme; kalibre edilmiş güven yüzdesi değildir. İsim/numara önceden öğrenci listesi olmadığından her zaman kontrol ister.
-7. **Excel'i indir** her zaman aktiftir; kontrol ve satır onayı isteğe bağlıdır. Bekleyen/hatalı okumalar, sarı hücreler, mükerrer numaralar veya bağlantının kopması indirmeyi engellemez. O anda bilinen ortak tablo indirilir; boş tabloda da sınav başlıkları oluşur. Eksik puanlar boş, geçersiz yazılar metin olarak korunur. Eksik/geçersiz soru içeren PÇ toplamı boş kalır; ortalamalar yalnız mevcut sayısal değerlerle hesaplanır. Soru/PÇ sütunları dinamik; öğrenci no baştaki sıfırlarını koruyan metindir.
+Bu komut telefon uygulaması ve tüneli kapatır. Tekrar açıldığında HTTPS adresi değişebilir. Bilgisayara aktarılmış tablo ve fotoğraflar korunur; eski adreste cihazda kalan aktarılmamış görüntüler yeni origin'e otomatik taşınmaz. Quick Tunnel kalıcı kurumsal dağıtım değildir. Kurumun kendi HTTPS vekili de kullanılabilir.
 
-Sınırlar: cihazda 20 aktarılmamış görüntü/120 MB; bilgisayarda 20 bekleyen-okunan iş/120 MB kaynak fotoğraf ve 2000 satır. Doluluk görünür hata verir, görüntü sessizce atılmaz. Tarama modelden hızlıysa kuyruk dolabilir. Ortak duraklatma/iptal bütün cihazlara uygulanır. Bütün giriş seçeneklerinde hedef, okuma başladıktan sonra 20 saniye içinde sonucu ekranda göstermektir. Görüntü hazırlığı dahil hata kesme sınırı 120 saniyedir; normal sonuç hedefi 20 saniyenin altıdır. 20 saniye dolması asıl okumayı kesmez veya hata satırı oluşturmaz. Önceki kâğıtların FIFO beklemesi ve aktarım ayrı gösterilir. GLM ağırlıkları uygulama açılışında öğrenci görüntüsü gönderilmeden hazırlanır (hazırlık sınırı 180 sn); model boşta bellekten çıkarılmışsa kuyruktaki kâğıt okunmadan bu hazırlık yeniden yapılır. Hazırlık okuma süresine dahil değildir; bu esnada kâğıtlar sırada saklanır, kullanıcı yeni kâğıt tarayabilir. Toplam ilk sonuç beklemesi hazırlık + tanıma + aktarım olduğundan daha uzun olabilir.
+## Tarama ve sonuçlar
 
-## Dört görüntü ekleme yöntemi
+1. Ders, soru sayısı ve her sorunun PÇ eşleşmesini ayarlayın. İlk kayıttan sonra soru sayısı korunur; farklı sayıda soru için yeni sınav açın.
+2. Ana okuyucuyu seçin. Seçim bu cihazdan **yeni eklenen fotoğraflara** uygulanır; her fotoğrafla birlikte kaydedilir. Kuyruktaki işler ve yeniden okumalar kendi modelini korur.
+3. Görüntü ekleme yöntemini seçin:
+   - **Mevcut otomatik tarama:** en az üç uygun kare ve 500 ms sabitlik.
+   - **Seri fotoğraf çekimi:** üst formu merkez 5:3 kadraja alıp düğmeyle kaydedin.
+   - **Hızlı otomatik yakalama:** ilk uygun geometri/netlik karesinde yakalar; aynı kâğıt çıkarılana kadar tekrar çekmez.
+   - **Galeriden toplu yükle:** üst form veya tam sayfa fotoğraflarını sırayla aktarır.
+4. Kamera modlarında isim/numara ve Puan/Not satırlarının tamamını kadraja alın. Galeri tam sayfa kabul eder. Kamera görüntüsü en fazla 1600 piksel; galeri uzun kenarı en fazla 2400 piksel olarak hazırlanır.
+5. Yeşil çekim onayı görüntünün **o cihazda kalıcı aktarım kuyruğuna kaydedildiğini** belirtir. Bilgisayara aktarım ve okuma ayrı aşamalardır; sonraki kâğıda geçebilirsiniz.
+6. Sarı hücreleri kaynak fotoğrafla karşılaştırın. Kontrol penceresinden düzeltin/onaylayın. İsim ve numara fotoğrafla kontrol ister; renkler ölçülmüş doğruluk yüzdesi değildir.
+7. **Excel'i indir** o andaki tabloyu alır. Eksik, hatalı veya onaylanmamış kayıtlar indirmeyi engellemez. Eksik puanlar boş, geçersiz metinler metin olarak korunur; numaraların baştaki sıfırları kaybolmaz.
 
-Canlı tarama bölümünde hoca yöntemini seçebilir:
+Aynı bilgisayara bağlı cihazlar ortak tabloyu görür. Sunucu fotoğrafları FIFO sırasıyla okur; bilgisayara aktarılmış işler telefon kapansa da sürer. Model sonucu, okuma sırasında elle yapılan dolu hücre düzeltmelerini ezmez. Tamamlanmış kayıtlarda **Yeniden oku** aynı fotoğrafı yeniden sıraya alır.
 
-- **Mevcut otomatik tarama:** en az üç uygun kare ve 500 ms sabitlik; mevcut davranış korunur.
-- **Seri fotoğraf çekimi:** kamerayı açıp üstteki isim/numara ve Puan/Not formunu yatay çerçeveye alın. Fotoğraf çek düğmesiyle çerçevede görünen alan (5:3, en fazla 1600 piksel genişlik) kaydedilir; tam sayfa çekilmez. Önizleme ve kayıt aynı merkez kırpımını kullanır; otomatik yakalama beklenmez. Her çekim cihazda kalıcı kaydedildikten sonra düğme tekrar kullanılabilir; OCR beklenmez.
-- **Hızlı otomatik yakalama:** ilk uygun geometri/netlik algılamasında fotoğraf alınır. Aynı kâğıt çıkarılana kadar tekrar çekilmez; yeniden hazırlanmak için en az 600 ms formun görünmemesi gerekir. Mevcut modun çok kareli sabitlik kontrolü bu modda uygulanmaz.
-- **Galeriden toplu yükle:** birden fazla fotoğraf seçilir. Görüntüler kırpılmadan, uzun kenarı en fazla 2400 piksel olacak şekilde JPEG kalite 0,94 ile hazırlanır ve sırayla kalıcı aktarım kuyruğuna eklenir. İlerleme ve bir hata halinde kaç fotoğrafın eklenmediği gösterilir. Cihazın 20 görüntü/120 MB sınırı dolarsa kalanlar tekrar seçilmelidir.
+İsteğe bağlı Excel öğrenci listesi için `.xlsx` veya `.xls` yükleyebilirsiniz. Öğrenci numarası ve ad-soyad ya da ayrı ad/soyad sütunları seçilir; en fazla 5000 öğrenci desteklenir. Liste ortak sınava aittir. Başında sıfır olan numaraları Excel'de metin olarak saklayın. Liste karşılaştırması ek model isteği göndermez; belirsiz eşleşmeler kontrol ister.
 
-Dört yöntem aynı kalıcı cihaz kuyruğunu ve sunucu FIFO okuma kuyruğunu kullanır. Sunucunun bekleyen iş sınırı yeni çekimi tek başına engellemez; aktarılmayan görüntüler cihaz sınırı içinde korunup tekrar denenir. Yeşil çekim onayı cihaz kaydını belirtir; ayrı aktarım mesajı bilgisayarın kaydı onayladığını gösterir. Son aktarım süresi cihaz kaydından sunucu onayına kadar ölçülür, varsa kuyruk beklemesi dahildir. Görüntü başına 3–5 saniye aktarım hedeftir; fiziksel telefon/ağ ölçümü yapılmadan üst süre garantisi verilmez. OCR bu süreden ayrıdır. Üç kamera modunda üst form ve Puan/Not satırları merkezdeki çerçeveye yerleştirilmelidir. Galeriden toplu yüklemede tam sayfa kabul edilir.
+## Okuyucular ve süreler
 
-## Saklama ve doğruluk
+| Özellik | GLM-OCR | Qwen3.5-9B Q8 |
+|---|---|---|
+| Ana model | `glm-ocr-eot:q8_0` | `qwen3.5:9b-q8_0` |
+| Kullanım | Mevcut hızlı OCR akışı; tek/çift kontrol | Bağımsız okuma ve aynı Qwen ile yakın alan karşılaştırması |
+| Soru sayısı | 1–30 | 1–30 |
+| Model hazırlığı | En fazla 180 sn; okuma süresinden ayrı | En fazla 180 sn; okuma süresinden ayrı |
+| Görüntü hazırlığı + ilk okuma | En fazla 120 sn; normal hedef 20 sn altı | En fazla 120 sn |
+| Ek Qwen yakın kontrolü | Uygulanmaz | Ayrıca en fazla 60 sn |
 
-Ortak tablo ve özgün fotoğraflar `work/shared/scanexam.sqlite` içinde SQLite WAL ile saklanır; klasörde kişisel veri vardır. Dev/telefon aynı veritabanını paylaşır. Yeniden başlatmada kalıcı kuyruk sürer, ölmüş lease yeniden alınır. Tek aktif sınav bütün bağlı cihazlara ortaktır; kullanıcı bazlı veya çoklu eşzamanlı sınav yönetimi değildir.
+GLM-OCR'nin mevcut okuma istemleri, GPU/CPU ayarları, kırpma akışı ve süre sınırları Qwen eklenirken değiştirilmedi.
 
-Excel'i düzenli indirin. Veri klasörünü güvenli tutun; yedek için sunucuları kapatıp SQLite ve varsa WAL/SHM dosyalarını birlikte saklayın. “Yeni sınav” onayı ortak tablo/fotoğrafları **bütün cihazlardan kaldırır**. Eski tarayıcı-only veriler otomatik içe alınmaz/silinmez. Özel mod/site verisi temizleme aktarılmamış görüntüleri kaybettirebilir. Bozuk kayıt sessizce boş sınavla değiştirilmez.
+Qwen ilk tam görüntü okumasını korur. Öğrenci numarası yakın görünümden okunur. Sayısal alan eksik, belirsiz veya yazılı toplamla tutarsızsa bütün soru hücrelerinin renkli küçük ve dikey büyük görünümleri karşılaştırılır. Farklı yeni bir değer ancak iki yakın okuma uyuşursa seçilir; ilk değerler alternatiflerde kalır ve değişen alanlar kontrol ister. Uyuşmazlıkta ilk değer korunur. Geometri doğrulanamazsa tam görüntü sonucu korunur. Ek kontrol başarısız olursa tamamlanmış ilk okuma kaybolmaz; kullanıcı iptali yine uygulanır.
 
-**Tek · hızlı okuma:** Ders/puan tablosu ve etiketli isim/numara ayrı küçük görüntülerden okunur. İlk kimlik dökümü dolu olarak korunur; Türkçe el yazısı okuyucusu yalnız kalan sürede ek görüş verir. Numaranın baştaki sıfırları korunur. Dolu puanlar tekrar tekrar okutulmaz; yalnız eksik veya 100 puanı aşan çelişkili alanlarda ek kontrol yapılır. Görüntü hazırlığı dahil kesin süre sınırı 120 saniye, normal sonuç hedefi 20 saniyenin altıdır. İlk üç kamera seçeneği tam sayfa okumasına geçmez; galeri tam sayfa kabul eder. Model hazırlığı, aktarım ve FIFO beklemesi ayrıdır.
+Numara sabit 11 haneye zorlanmaz. Puanlar toplamdan türetilmez, yazılı toplam hesaplanan toplamla değiştirilmez; sabit rakam değiştirme veya eşit soru puanı varsayımı yoktur. Toplam uyuşmazlığı kontrolü tetikler; görsel kanıtın yerini tutmaz. Çözülemeyen 100 puan aşımı ve mükerrer numaralar satır onayını engeller.
 
-19 Ekim 2026: i7-1255U üzerinde, modeller önceden hazırken iki beş soruluk tam sayfa örnekte sunucu görüntü hazırlığı + okuma 14,94 ve 14,74 saniye sürdü. Bu iki örnek genel doğruluk/hız garantisi değildir; kuyrukta önceki kâğıtları bekleme ve telefon aktarımı bu ölçüme dahil değildir. İki modelin iş parçacığı sayısı aynı profilde 4, istenirse `SCANEXAM_READER_THREADS` ile değiştirilebilir. Hızlı hazırlık, kullanılmayacak ek yakınlaştırma/kontrast kopyalarını üretmez.
+Süreler modelin bellekte olmasına, GPU/CPU dağılımına, soru sayısına, fotoğrafa ve ek kontrollere bağlıdır. Model hazırlığı, aktarım ve FIFO beklemesi tanıma süresinden ayrıdır. Modeller son kullanımdan sonra 30 dakika bellekte tutulabilir.
 
-**Çift · karşılaştırmalı okuma:** Aşağıdaki ek hücre ve isim karşılaştırmaları bu seçenekte uygulanır; daha uzun sürer.
+27 Ekim 2026 geliştirme karşılaştırmasında, tekrar kullanılan 11 fotoğraftaki ilk sonuçlara yeni Qwen kontrolleri uygulandı: puanlar **52/55 → 55/55**, tam eşleşen öğrenci numaraları **7/11 → 9/11**, yazılı toplamlar **11/11 → 11/11**. İki çekim aynı kâğıda aittir. Bir zor örnek yeni okuyucuyla baştan sona ayrıca denendi ve RTX 3050 Laptop 4 GB üzerinde yaklaşık **114 sn** sürdü. Bu küçük geliştirme seti genel doğruluk veya 3090 hız garantisi değildir; kalan numaralar elle kontrol gerektirir. Gerçek öğrenci verileri ve yerel raporlar Git'e eklenmez.
 
-GLM gerçek çizgi geometrisinden isim/numara hücrelerini ayırır. İsim renk koruyan 2× ve etiketli hücreden, numara 2× etiketsiz ve etiketli hücreden okunur. Geçerli etiketsiz numara önceliklidir; bulunmazsa geçerli etiketli okuma kullanılır. Farklar alternatif/sarı uyarı olur. `Numarar` gibi baştaki basılı etiket okuması numaradan ayrılır; numaranın içindeki harfler değiştirilmez. İsimde rakam, numarada harf veya puan/toplamda geçersiz sayı varsa hücreye aktarılmaz: uygun alternatif yoksa hücre boş/sarı kalır, ham okuma alternatiflerde saklanır. Öğrenci listesiyle tamamlanmaz; harfler sayıya zorla çevrilmez, tekrarlayan numara doğru görünecek bir öneke kısaltılmaz. Native HTML/Markdown puan tablosunda yanlış sütun sayısı doldurulmaz. Sabit geometri bulunmazsa aşağıda açıklanan tam sayfa okumasına geçilir.
+## Güncelleme
 
-İsimler için bilgisayarda **zaten kuruluysa** `qwen3.5:4b` ile dil değerlendirmesi yapılır. Model ad/ikinci ad içindeki muhtemel OCR yazım hatalarını inceler; belirsiz yazıda yaygın Türkçe isim yorumu tercih edilir. Bu kullanıcının seçtiği tercihtir; nadir isimlerde hata riskini artırabilir. Dil değerlendirmesi ismi doğrudan değiştirmez: şüpheli durumda etiketsiz ve etiketli isim hücreleri yeniden okunur. Geçerli ilk isimde ancak tek kelime değişikliği ve ikinci kırpımın o kelimeyi desteklemesiyle, tam bir model okuması otomatik seçilir. İlk isim geçersizse iki yeni tam okuma uyuşmalıdır. Kelimeler birleştirilmez, `q/4 → ç` veya `Enre → Emre` gibi sabit dönüşüm tablosu yoktur. İlk sonuç/alternatifler korunur; isim düzeltmesi numara, puan ve toplamı değiştirmez. Model bulunmaz/hata verirse ilk GLM sonucu korunur; yeni model otomatik indirilmez. Ek kontrolün toplam sınırı 45 sn, kâğıt okumasının genel 120 sn sınırı içinde kalır; kullanıcı iptali uygulanır.
+Bekleyen cihaz aktarımlarını tamamlayın. Çalışan uygulamayı kapattıktan sonra:
 
-İsim kontrolü 2048 bağlam ve 8 GPU katmanı kullanır; GLM'nin GPU hızlandırması korunur. İki modelin birlikte bellekte kalmasına izin verilir; istekler sırayladır. Açılışta kurulu kimlik modeli ve GLM görüntüsüz olarak hazırlanır; aynı istek profilleri gereksiz yeniden yüklemeyi önler. RTX 3050 Laptop 4 GB üzerinde tekrar kullanılan 15 geliştirme görüntüsünde sıcak okuma ortancası **21,06 sn → 3,52 sn**, yeni profilde aralık **2,78–7,15 sn** ölçüldü. Telefon yakalama/aktarma dahil değildir. Modeller bellekten çıkarılmışken ayrı ölçümde hazırlık **9,95 sn**, ilk kâğıt **8,79 sn**, sonraki iki kâğıt yaklaşık **6,88 sn** sürdü. Başlangıç hazırlığı ile sıcak ölçüm ayrı değerlendirilmelidir. İşlemci, RAM ve GPU değişince bu süreler değişir; ekran kartı olmayan ofis bilgisayarı için bu sonuçlar hız garantisi değildir.
+```powershell
+git pull --ff-only
+npm ci
+npm run reader:setup:all
+```
 
-Son iki canlı Nisa çekimi `Nisa koq/kog` yerine **Nisa Koç**, canlı Yunus çekimi `Yunus Enre Güngör` yerine **Yunus Emre Güngör** seçildi. 7 farklı kâğıdın 15 geliştirme görüntüsünde isim **12/15**, numara **11/15**, puan **72/75**, yazılı toplam **9/15** doğru; 8 görüntü tamamen doğruydu. Yavaş profilde puan 73/75 idi; hızlı tekrarın bir çekiminde `14 → 74` hatası görüldü. Bütün alanların doğruluğunun aynı kaldığı iddia edilmez. Rapor `work/benchmark/cedilla-20261008/report.md`; mevcut kullanıcı düzeltmeleri otomatik yeniden yazılmaz, yeni sürüm yeni okumalara uygulanır. `npm run phone` ayrı üretim derlemesi kullandığı için güncellemek için aktarım bittikten sonra `npm run phone:stop`, ardından `npm run phone` çalıştırın ve çıkan yeni adresi açın.
+Modeller zaten kuruluysa tekrar indirilmez. Geliştirme için `npm run dev`; üretim için `npm run build` ve `npm start` kullanın. Açık telefon üretim süreci kaynak kodu kendiliğinden yenilemez: aktarımlar tamamlandıktan sonra `npm run phone:stop`, ardından `npm run phone` çalıştırıp yeni HTTPS adresini açın.
 
-Yazılı toplam bağımsız okunur. Puanlar toplamdan türetilmez; toplam puanlara zorla eşitlenmez. Uyuşmazlık tüm puanları sarartmaz: yazılı toplam/kontrol ekranı uyarır. İki okumanın anlaşması doğruluk kanıtı değildir; GLM'nin kalibre edilmiş alan güven yüzdesi yoktur. GLM son okumadan sonra 30 dakika bellekte tutulur; kısa ders aralarında yeniden soğuk yükleme azalır, ancak bu süre boyunca model belleği kullanılır.
+## Veri ve sınırlar
 
-**100 puan sınırı:** puanların toplamı 100'ü aşıyorsa gerçek çizgi geometrisinden bulunan şüpheli Puan hücreleri en fazla iki soruda renkli/beyaz kenarlı görünümlerle ayrı okunur. Native okumalar farklıysa kurulu isim kontrol modeli aynı bellek profiliyle yalnız bu sayısal hücreyi ayrıca okur (8 sn sınır; bulunmaz/hata verirse ilk değerler korunur). Birbirini destekleyen literal okumalar ve 100'ü aşmayan yeni toplam olduğunda görsel puan değeri seçilir; eski değer alternatiflerde kalır. Soru sayısı veya soru başına eşit puan varsayılmaz; yazılı toplamdan eksik puan hesaplanmaz. Çelişki çözülmezse puanlar sarı kalır ve satır onayı için düzeltme gerekir. Kullanıcının tercihiyle Excel kontrolsüz de indirilebilir; 100'ü aşan değerler de tablodaki haliyle korunur, indirme onay oluşturmaz.
+- Ortak tablo, fotoğraflar ve kalıcı kuyruk: `work/shared/scanexam.sqlite` ve SQLite WAL/SHM dosyaları.
+- Cihazda 20 aktarılmamış görüntü / 120 MB; bilgisayarda 20 bekleyen-okunan iş / 120 MB fotoğraf ve 2000 satır sınırı.
+- **Yeni sınav**, onaydan sonra bütün bağlı cihazların ortak tablo ve fotoğraflarını kaldırır.
+- Yedek için uygulamaları kapatın; SQLite ve varsa WAL/SHM dosyalarını birlikte saklayın. Excel'i düzenli dışa aktarın.
+- Tarayıcı verisini temizlemek aktarılmamış görüntüleri kaybettirebilir. Aktarım bitene kadar telefon sekmesini açık tutun.
+- Tek aktif sınav ortaktır; kullanıcı bazlı veya çoklu eşzamanlı sınav yönetimi yoktur.
+- `work/`, model dosyaları, fotoğraflar, test etiketleri, veritabanı ve telefon parolaları depoya dahil değildir.
 
-Toplam 100'ü aşmasa da 1/2/3/7 içeren geçerli puanlar en fazla altı hücrede renkli ve beyaz kenarlı kırpımlarla kontrol edilir. İlk okumadan farklı bir sayı için kurulu ikinci yerel modelin görsel desteği gerekir. Native kırpımlar ikinci modelin cevabını desteklemiyorsa 1/2, 3/7 veya 2/7 karışıklığı ikinci modelin iki ayrı kırpımda uyuşmasıyla çözülebilir. Sabit rakam değiştirme veya toplamdan cevap üretme uygulanmaz. Çelişkiler ve ilk değerler alanın alternatiflerinde korunur; yalnız biçim hatası olup farklı sayısal aday bulunmayan okumalar yeni uyarı üretmez. Ek kontrol kurulu model yokken ilk puanı korur; model indirmez.
+## Sorun giderme
 
-Kontrol ekranı onayı engelleyen nedeni açıkça gösterir: eksik/geçersiz alanlar veya mükerrer numaranın bulunduğu satırlar. Bu doğrulama hataları sunucudan 400 yanıtıyla açıklanır; genel 500 mesajına dönüşmez. Ders/PÇ uyarıları tek özet kutusunda, teknik yeniden okuma açıklamaları kapalı “Okuma ayrıntıları” bölümünde gösterilir. Yazılı ve hesaplanan toplam farkı görünür kalır; onay bu farkı kabul edebilir ama 100'ü aşan puanı veya mükerrer numarayı geçemez.
+| Durum | Kontrol |
+|---|---|
+| `node` / `npm` bulunamıyor | Node.js 24 kurun, PowerShell'i yeniden açın; `node --version` ve `npm --version` çalıştırın. |
+| Okuma modeli kurulu değil | Seçili modele göre `reader:setup`, `reader:setup:qwen` veya `reader:setup:all` çalıştırın. |
+| İsim/numara desteği eksik | GLM yardımcı modeli için `npm run reader:setup:identity`; kaynak fotoğrafla kontrol edin. |
+| Motor bulunamadı / bağlantı kurulamadı | Kurulumu tamamlayıp uygulamayı yeniden açın; `work/reader/service.log` dosyasını inceleyin. Varsayılan motor adresi `http://127.0.0.1:11435`. |
+| İlk okuma yavaş | İlk model yüklemesini ve CPU/RAM paylaşımını hesaba katın. 4 GB VRAM'de 9B modelin tamamı GPU'ya sığmaz. |
+| Telefonda kamera açılmıyor | Güvenilir HTTPS, güncel normal tarayıcı ve kamera izni kullanın. |
+| Telefon eski sürümü gösteriyor | Aktarımı tamamlayıp `phone:stop` ve `phone` ile yeniden başlatın; yeni adresi açın. |
+| Sarı hücre / toplam farkı | Kaynak fotoğrafı kontrol edin. İki model okumasının uyuşması tek başına doğruluk kanıtı değildir. |
 
-13 Ekim 2026'da yenilenen `Desktop/scan_exam_testes` klasöründeki 10 fotoğrafla soru puanları tek tablo okumasında **48/50**, ek hücre kontrolüyle **50/50** doğru çıktı. Görsel olarak doğrulanan `13 → 17` ve `17 → 12` hataları çözüldü; yazılı toplamlar yeni akışta **10/10** doğruydu. Bu sonuç yalnız bu geliştirme setine aittir; kimlik/ders bilgisi hataları sürebilir. Ham sonuçlar ve değerlendirme `work/benchmark/digit-review-20261013` altında tutulur; mevcut ortak tablo bu deneylerle yeniden yazılmaz.
+## İleri ayarlar
 
-Ardışık taramalarda, kamera karesinin JPEG olarak saklanması ve farklı küçültme işlemleri ince tablo çizgilerinin seçilen konumunu birkaç piksel kaydırabilir. Puan tablosunun satır aralıkları kendi merkezinde ölçülür ve çizgi arama bandına uygun 6 piksel tolerans kullanılır. Kesik form, eksik Not satırı ve yanlış soru sütunu kontrolleri korunur. Boş kalan isimde iki ek okuma uyuşmazsa beyaz kenarlı üçüncü isim kırpımı denenir; en az iki tam görsel okumanın desteklediği isim seçilir. Üçüncü okuma başarısızsa ilk adaylar ve puanlar korunur. Hatalı satırın kontrol ekranı gerçek hata nedenini gösterir. 13 Ekim'deki aktif 11 taramanın yeniden okumasında geometri **10/11 → 11/11** oldu; Can Aslan'ın başarısız fotoğrafı okundu, boş Nisa ismi **Nisa Koç** olarak seçildi. Rapor `work/benchmark/capture-review-20261013/report.md` içindedir.
+Standart kurulumda ortam değişkeni gerekmez. Gerekirse PowerShell'de uygulamayı başlatmadan önce ayarlayın:
 
-Son 10 gerçek telefon fotoğrafının izole yeniden okumasında Nisa'nın iki `74` hatası `14` olarak seçildi: puanlar **48/50 → 50/50**, kritik alanlar **72/80 → 74/80**, sıcak ortanca **3,91 sn**. Nisa çekimlerinde süre **4,06 / 5,37 sn**. Yazılı toplam hâlâ `89/87` okunuyor (doğru `81`); puanlardan üretilerek düzeltilmedi. İsim **7/10**, numara **9/10** doğru; ilk İbrahim numarası yanlış, tekrar çekimi doğru. 7 farklı kâğıdın bu 10 çekimi tekrar kullanılan geliştirme verisidir; bağımsız genel doğruluk değildir. `work/benchmark/score-limits-20261008` içindeki raporlar mevcut ortak tabloyu yeniden yazmadan oluşturuldu.
+| Değişken | Varsayılan / açıklama |
+|---|---|
+| `SCANEXAM_READER_URL` | `http://127.0.0.1:11435`; yalnız HTTP loopback adresleri kabul edilir. |
+| `SCANEXAM_READER_THREADS` | GLM tarafında varsayılan 4 iş parçacığı; isteğe bağlı 1–64. |
+| `SCANEXAM_DATA_DIR` | `work/shared`; dev ve telefon aynı veri dizinini kullanmalıdır. |
+| `SCANEXAM_PHONE_PASSWORD` | Geçici varsayılan `scanexam`; gerçek kullanımda değiştirin. |
+| `SCANEXAM_HTTPS_CERT`, `SCANEXAM_HTTPS_KEY` | Doğrudan geliştirme HTTPS'i için birlikte verilir; telefon sertifikaya güvenmelidir. |
+| `SCANEXAM_PUBLIC_ORIGIN` | Kendi üretim HTTPS vekilinizin tam origin'i; özgün Host korunmalıdır. |
+| `SCANEXAM_MODEL` | Eski GLM yolunun sunucu düzeyi model ayarı; varsayılan `glm-ocr-eot:q8_0`. Normal iki-model seçimi için kullanmayın. |
 
-Tablodaki yazılı toplam boş, geçersiz veya puanların toplamıyla farklıysa yalnız Not hücresi renkli olarak yeniden okunur; bu da geçersizse ek kontrast görünümü denenir. Aritmetik yalnız ek kontrolü tetikler, cevap seçmez. Geçerli tablo toplamı, puanların toplamıyla uyuşmasa bile başka okumayla değiştirilmez. Yeniden okunan toplam kontrol ister; önceki literal okumalar alternatiflerde korunur. Ayrı rakamlar birleştirilmez, tekrarlayan rakamlar kısaltılmaz. Kontrast görünümü soluk/renkli çizgileri kaybedebileceği için genel görüntü yerine kullanılmaz.
+## Geliştirme ve doğrulama
 
-8 Ekim'deki gerçek telefon taramalarıyla ikinci kontrol: yeni üç kâğıt fotoğraftan görsel etiketlerle **45/45 alan** doğru okundu. Genişletilmiş set 7 farklı kâğıda ait 12 görüntü içerir (yeniden çekimler ve eski kopyalar dahil); sonuçlar bağımsız 12 kâğıt doğruluğu sayılmaz. Can Aslan'daki `Numarar` etiketi ayrıldı; Yunus Emre Güngör'ün bir çekimindeki numara seçimi düzeldi. Nisa kâğıdında kimlik/toplam, bazı çekimlerde rakamdan-rakama puan hataları sürer; alan kuralları bunların hepsini yakalayamaz. İsimdeki `K04` artık sonuç değeri olarak kullanılmaz, kontrol alternatifinde kalır. Rapor ve görseller Git dışında `work/benchmark/capture-errors-20261008` içinde.
-
-Kamera 2560×1440 çözünürlüğü tercih olarak ister; cihaz daha düşük çözünürlük sunabilir. Yakalama üst sınırı 1600 piksel, geometri analizi 800 piksel kalır. Dikey telefonda kısa kenar kaynak ayrıntısını sınırlayabildiğinden bu tercih yeni çekimlere yöneliktir; mevcut 1080×648 fotoğraflara ayrıntı eklemez. Fiziksel telefonda yeni çözünürlüğün başarı/süre etkisi henüz ölçülmedi.
-
-8 Ekim 2026'da aynı dört fotoğrafın saklanan üst-form kopyalarıyla kontrollü karşılaştırma: soru puanları **20/20 → 20/20**, kimlik **6/8 → 6/8**, yazılı toplam **2/4 → 3/4**; kritik alanlar **28/32 → 29/32**, tamamen doğru kâğıt **2/4 → 3/4**. Bunlar geliştirmede tekrar kullanılan örneklerdir; genel doğruluk veya yeni kâğıt başarısı değildir. Farklı filtreler ve ikinci yerel model bazı doğru alanları bozduğu için genel varsayılan yapılmadı. 1/3/7/12/30 soru geometrisi, ayrıştırma, yeniden okuma ve değerlendirme testleri geçer; farklı soru sayılı gerçek fotoğraflar henüz ölçülmedi. Yerel ayrıntılar `work/benchmark/accuracy-20261008.md` içinde.
-
-6 Ekim 2026'da tekrar kullanılan dört 5-soruluk gerçek fotoğraf testi: **20/20 soru puanı, 6/8 kimlik alanı, 2/4 yazılı toplam doğru**. İlk soğuk ölçüm ~65 sn; orijinal dosyalarda sıcak ölçümler ~1,7–2,5 sn (GPU kullanılarak, hazırlama dahil; telefon yakalama/yükleme hariç). Genel doğruluk, ofis CPU süresi veya sıfır hata garantisi değildir. Yerel raporlar `work/benchmark/glm-production-20261006-*.json`. Benchmark cevapları yalnız okuma bittikten sonra değerlendirmede kullanılır.
-
-Ek soğuk başlangıç kontrolünde bir HTTPS okuması120sn sınırına takıldı; fotoğraf/satır korundu ve sıcak yeniden denemede1,7sn tamamlandı. Ağırlık hazırlığı ayrıldıktan sonraki kontrollü testte yaklaşık65sn hazırlık +84sn ilk tanıma ölçüldü. Bu nedenle toplam ilk sonuç beklemesi149sn civarında olabilir; sıcak2sn süresiyle karıştırılmamalıdır. Ek rapor: `work/cold-preparation-probe.json`.
-
-## Doğrulama
-
-```bash
+```powershell
 npm test
 npx tsc --noEmit
 npm run lint
 npm run build
 ```
 
-Testler dinamik 1/3/7/12/30 soru/PÇ şema/geometrisi, Excel, literal sıfır/boşluk/toplam, kimlik alternatifleri/renkleri, atomik ortak kayıt, iki SQLite istemcisi, aynı hücre çatışması, model sırasında edit, iptal/lease recovery, aynı işlem kimliğiyle tekrar, native GLM ayrıştırma, EOT metadata kopyası ve telefon parola/kaynak denetimlerini kapsar. Fiziksel telefon/webcam, farklı ışık/perspektif ve diğer gerçek soru sayıları ayrıca sahada denenmelidir.
+Testler dinamik soru/PÇ şeması ve geometrisi, Qwen karşılaştırmaları, literal sıfırlar/boşlar/toplamlar, Excel, kalıcı ortak kuyruk, öğretmen düzenlemeleri, iptal ve telefon parola/kaynak denetimlerini kapsar. 1, 3, 7, 12 ve 30 soru geometrisi test edilir; farklı soru sayılı gerçek fotoğraflar ayrıca sahada denenmelidir.
 
-Gerçek GLM benchmark:
+Yerel benchmark araçları: [reader/benchmark/README.md](reader/benchmark/README.md). Gerçek fotoğrafları, öğrenci numaralarını veya beklenen cevapları kaynak koda eklemeyin. Yerel etiket/raporları `work/benchmark/` altında tutun.
 
-```bash
-node reader/benchmark/glm-production.mjs --source-dir C:/fotograf-klasoru --output work/benchmark/yeni-sonuc.json
-```
-
-Dört örnek/etiket yerel `work/benchmark/cases.json` dosyasındadır; çıktı üzerine yazılmaz. `--prepared` önceki üst-form kopyalarını açıkça seçer.
-
-Yeni etiketli set için `--cases C:/fotograf-klasoru/cases.json` kullanılır. Her kâğıdın soru sayısı kendi `expected.scores` uzunluğundan alınır (1–30); PÇ etiketleri aynı uzunlukta olmalıdır. Değerlendirme S10–S30 dahil bütün alanları sayar. Model hazırlığı ayrıca `modelPreparationMs` olarak ölçülür; soğuk yüklemeden sonraki ilk okuma sıcak süre özetinden çıkarılır. Eski toplam akışını aynı model koşullarında karşılaştırmak için yalnız benchmark'ta `--disable-total-retry` kullanılabilir.
-
-Eski Qwen optimizasyonu açık model seçimiyle korunur: GPU bölgesel, CPU kompakt bütün üst tablo. `SCANEXAM_FAST_READING=off`, `SCANEXAM_REGION_READING=on/off` yalnız Qwen akışını etkiler. Tesseract karşılaştırma kodu varsayılan okuyucu değildir.
-
-Kaynaklar: [GLM-OCR](https://github.com/zai-org/GLM-OCR), [GLM native Ollama](https://github.com/zai-org/GLM-OCR/blob/main/examples/ollama-deploy/README.md), [Ollama](https://github.com/ollama/ollama), [EOT düzeltmesi](https://github.com/ollama/ollama/pull/17195), [Qwen3.5-4B](https://huggingface.co/Qwen/Qwen3.5-4B). Paketlerin lisans dosyaları korunur.
-
-
-### Serbest fotoğraf / tam sayfa okuma
-
-Sabit form geometrisi bulunursa mevcut bölgesel GLM akışı aynen kullanılır. Bulunamazsa fotoğrafın yalnız üst şeridini okuyup hizalama hatası vermek yerine sayfanın tamamı (oranı korunarak en fazla 1280 piksel) native GLM Text Recognition ile okunur. Modelin belge dökümünden etiketli isim/numara, ders, sıralı Soru–PÇ başlıkları, Puan ve Not alanları ayrılır. Soru puanları tam olarak yapılandırılan sayıda olmalıdır; eksik sütunlar doldurulmaz. Geçersiz kimlik/sayısal alanlar boş bırakılıp ham adayları korunur. Serbest fotoğraf sonuçları fotoğrafla kontrol gerektirir; sabit hücre kırpımlarına dayalı ek isim/rakam doğrulaması bu yolda yapılamaz. Boşluk, gölge, perspektif ve bulanıklık okuma doğruluğunu etkileyebilir.
-
-Tam belge yedeği ve çift karşılaştırmalı okuma da kâğıt başına aynı 120 saniyelik üst sınıra dahildir. Normal hızlı okuma hedefi 20 saniyenin altıdır; ek kontroller bu hedefin kalan süresinde çalışır. Geçerli ilk değerler aritmetik ile değiştirilmez.
-
-
-### Tam sayfadan bölgesel okumaya otomatik hazırlama
-
-Sabit kamera geometrisi doğrudan bulunamazsa, sunucuda yerel OpenCV/WASM ile basılı formun dört köşesi aranır ve renkli kaynak görüntünün perspektifi düzeltilir. Hücreler ancak soru sayısı, gerçek Puan/Not satırları ve kimlik ayırıcı çizgileri birlikte doğrulanırsa kullanılır. Tam sayfanın boş kısmı ve sınav kuralları modele tekrar tekrar okutulmaz; eski bölgesel OCR ve kimlik kontrolleri uygulanır. Kaynak fotoğraf korunur. Hiçbir geçerli geometri bulunamazsa tam belge yedeği kalır.
-
-Çift karşılaştırmalı okumada puanlar tam tabloya ek olarak bir Puan satırı kırpımıyla topluca karşılaştırılır. Tek hızlı okumada bu ek satır yalnız eksik hücre varsa okunur. İkinci okuma tam sayıda geçerli sayısal sütun döndürüyor ve bağımsız yazılı toplam ilk puanlarla uyuşuyorsa yalnız çelişen hücreler ayrıntılı kontrol edilir. Eksik/bozuk satır okumasında veya eksik/uyuşmayan yazılı toplamda eski hücre kontrollerine dönülür; farklı puan seçimi yine görsel destek ister. Native modele gönderilen büyütülmüş hücrelerde boş kenarların hesaplama maliyeti sınırlandırılır; renkli kaynak ve ikinci modelin görselleri korunur. Bu yöntem model güven yüzdesi sağlamaz.
-
-Telefon uygulaması ayrı bir üretim sürecidir: kaynak kodu değiştirmek açık telefon sürecini güncellemez. Telefonda bekleyen aktarımlar tamamlandıktan sonra `npm run phone:stop`, ardından `npm run phone` ile yeni sürümü başlatın ve yeni HTTPS adresini açın. Sunucuya aktarılmış fotoğraflar ve tablo korunur. Geliştirme sunucusu ile eski telefon sürecinin aynı anda aynı sırayı okuması eski hataları tekrar üretebilir.
-
-
-### Kıvrımlı üst form ve hızlı yakalama düzeltmesi
-
-Yedi düz çizgi doğrulanamazsa, basılı formun kapalı hücre konturları incelenir. Ana form, iki kimlik etiketi, üç puan satırı ve yapılandırılan sayıdaki soru hücresi birlikte doğrulanır; eksik sınır veya yanlış soru sayısında hücre uydurulmaz. Çalışan düz form akışı korunur. Kıvrımlı formda Puan tablosu özgün Table Recognition ile okunur. Puan etiketi `Pam`/`Pun` gibi hatalı dökülürse ancak gerçek hücre sayısı doğrulanmış akışta literal değerler korunur; PÇ başlıkları belirsiz kalırsa ayrıca kontrol işaretlenir. Eksik Not, Puan/Not satırının özgün görüntüsünden bağımsız okunur; toplamdan türetilmez.
-
-Üçüncü seçenekte ilk uygun kareyi yakalama ve kâğıt çıkarılana kadar yeniden çekmeme korunur. Tarama aralığı 90 ms olur; kıvrılmış üst başlık yerine dört gerçek tablo çizgisi ve bütün ölçülmüş sütun ayırıcıları da doğrulanabilir. Sabit tarama seçeneğinin kararlılık şartları değişmez.
-
-
-Galeriden gelen fotoğrafta ana formun dış sağ kenarı kesilmişse, uzun basılı çizgilerden ek perspektif adayları çıkarılır. Bu adaylar ancak mevcut tam soru ızgarası ve kimlik bölmeleri doğrulanınca kullanılır; çalışan kamera/düz form yolu önce denenir. Silinip aynı değer tekrar yazılmış Not alanı örneğin `70 70` olarak dökülürse aynı çok basamaklı literal bir kez tutulur, ham döküm alternatif olarak saklanır ve kontrol istenir. Farklı değerler veya ayrık tek basamaklar birleştirilmez; puan toplamından Not üretilmez.
-
-
-Gölgeyle koyulaşan kâğıt bölgelerini siyah dolgu sanan sabit eşik, ancak normal çizgi/kapalı hücre yolları başarısız olduğunda yerel ışık ortalamasıyla yeniden kontrol edilir. Aynı basılı sınırlar ve yapılandırılmış soru sayısı doğrulanmadan bölme üretilmez. Bu kontrol 2. ve 3. seçenek için ortak sunucu görüntü hazırlığındadır; kamera kadrajı, hızlı yakalama davranışı ve çalışan puan OCR görselleri korunur.
-
-
-### İsteğe bağlı Excel öğrenci listesi
-
-Sınavı hazırla bölümünden .xlsx/.xls/.csv öğrenci listesi yüklenebilir (5 MB, en fazla 5000 öğrenci). Sayfa, başlık satırı, numara ve ad/soyad sütunları önizlenir ve seçilebilir; ayrı ad/soyad sütunları desteklenir. Görünen Excel numara biçimi ve baştaki sıfırlar korunur. Liste aktif sınavla birlikte bilgisayarda saklanır, telefon ve bilgisayar tarafından paylaşılır; yeni sınavda temizlenir.
-
-Eşleştirme OCR tamamlandıktan sonra yerel metin karşılaştırmasıyla yapılır; görüntü veya isim modeli tekrar çağrılmaz. Numara ve isim birlikte puanlanır; Türkçe harf/case farkları karşılaştırmada normalleştirilir, sonuçta Excel’deki özgün isim ve numara kullanılır. Yakın eşit adaylar veya yetersiz kanıt otomatik seçilmez; kontrol panelinde yakın adaylar görünür. Liste yüklemek/değiştirmek mevcut otomatik sonuçları da kaynak fotoğrafı yeniden okumadan karşılaştırır. Okuyucunun özgün kimliği ve alternatifler saklanır; liste kaldırılınca elle düzenlenmemiş/onaylanmamış kimlikler özgün okumaya döner. Öğretmenin kimlik düzenlemeleri/onayları ve bütün puanlar korunur. Liste olmadan görsel kimlik okuması kullanılır; liste karşılaştırması ek görüntü isteği göndermez ve aynı süre bütçesinde kalır.
-
-
-### Hızlı okumada isim ve 100 puan kurtarması
-
-Etiketli kimlik dökümünde isim rakam/harf karışıklığı nedeniyle geçersizse isim hücresi tek başına kısa bir istekle okunur. İlk literal yazım boşaltılmaz veya sabit karakter tablosuyla dönüştürülmez; kurulu ikinci okuyucu kalan hızlı kontrol bütçesinde ek görüş verir. Süre biterse dolu kimlik korunur ve alternatifleriyle işaretlenir. Excel’de birebir numara bulunmaması ile numaranın başka bir isme ait olması kontrol panelinde ayrı açıklanır; gerçek kâğıt ismi zorla başka öğrenciye çevrilmez.
-
-Hızlı puan okuması toplam 100’ü aşarsa, yalnız o durumda puan satırı ve en fazla iki farklı hücre kısa isteklerle kontrol edilir. Bir değişiklik ancak satırdaki literal puan ile bağımsız hücre görüntüsü aynı değeri okursa ve sonuç geçerliyse seçilir. Yazılı toplamdan soru puanı türetilmez, 100’e kırpma yapılmaz; çözülemeyen aşım onaylanamaz. Geçersiz yazılı Not, önce kendi odaklı renkli kırpımından denenir; 215 gibi ilk geçersiz dökümler alternatiflerde tutulur. Ek kontroller 20 saniyelik hedefin kalan kısmını kullanır; asıl puan ve kimlik okumaları 120 saniyelik hata kesme sınırına tabidir. Ek kontrol süresi biterse tamamlanmış alanlar korunur.
-
-Kontrol penceresinde kaynak fotoğrafı olan tamamlanmış satırlar için Yeniden oku bulunur. Fotoğraf yeniden yüklenmez; aynı FIFO kuyruğuna alınır. Dolu öğretmen düzenlemeleri korunur, boş/yalnız boşlukla temizlenmiş hücreler yeniden doldurulabilir.
-
-
-### Güncel kamera ve galeri politikası (19 Ekim)
-
-İlk üç seçenek (sabit otomatik, seri kamera, hızlı yakalama) yalnız üst formu okur. Kaynak türü cihazdaki kalıcı aktarım kaydında ve bilgisayardaki satırda saklanır. Kamera fotoğrafında hücreler bulunamazsa yalnız üst formun sınırlı görüntüsü okunur; tam sayfa okumasına geçilmez. Dördüncü seçenek, galeriden gelen tam sayfayı kabul eder. Çalışan hücre algılama ve puan görselleri korunur.
-
-Görüntü hazırlığı dahil hata kesme sınırı her iki kontrol modunda 120 saniyedir. Hız hedefi 20 saniyenin altıdır; bu hedef asıl okumayı iptal etmez. İsteğe bağlı ek kontroller yalnız hedef sürenin kalan kısmını kullanır; ikinci tam karşılaştırma ancak hızlı bitirme hedefi için yeterli zaman kaldığında başlar. Çift okuma gerçekleşmediyse sonuç çift doğrulanmış sayılmaz. Tamamlanmış alanlar ek kontrol başarısız olduğunda korunur. Bu sınır her fotoğrafın doğru ve eksiksiz okunacağı garantisi değildir. Model hazırlığı, cihaz aktarımı ve FIFO beklemesi ayrıca değerlendirilir; toplu bir kuyruktaki bütün fotoğrafların yüklemeden 20 saniye sonra bitmesi garanti edilmez. 120 saniye yalnız son hata kesme sınırıdır; bu ayarı artırmak okuyucuyu hızlandırdığı anlamına gelmez.
-
-100 puanı aşan tek hücre için ayrı görsel puan satırı kâğıtta yazan Not ile uyuşuyorsa o literal satır seçilebilir. Not'tan çıkarma yaparak puan üretilmez.
-
-
-### Üçüncü seçenek: yeniden kurulan hızlı kamera
-
-Hızlı otomatik yakalama artık ayrı `RapidCamera` bileşenidir. Yalnız puan ızgarasını kabul eden eski hızlı algılama yolu kullanılmaz; birinci seçeneğin mevcut tam üst form ve netlik kontrolü aynı haliyle çalışır. İlk uygun kare bekletilmeden alınır. Algılanan kutudan yeni fotoğraf çekilmez: doğrulanan kare, ikinci seçeneğin aynı merkez 5:3 kadrajı (en fazla 1600 piksel) ve JPEG .94 kalitesiyle mevcut `onCapture` işlevine teslim edilir. Kalıcı kayıt, aktarım, FIFO, OCR, öğrenci listesi ve sonuç işlemleri ortaktır. Üçüncü seçenek için ayrı bir OCR ya da süre ayarı yoktur.
-
-Kayıt tamamlanmadan ikinci görüntü kabul edilmez. Aynı kâğıt, kadrajdan yaklaşık 600 ms çıkarılana kadar tekrar yakalanmaz; kullanıcı Sonraki kâğıda hazırla ile de yeniden kurabilir. Birinci, ikinci ve dördüncü seçeneklerin bileşenleri/okuyucusu değiştirilmemiştir.
+Kaynaklar: [GLM-OCR](https://github.com/zai-org/GLM-OCR), [Ollama](https://github.com/ollama/ollama), [Qwen3.5-9B](https://huggingface.co/Qwen/Qwen3.5-9B). Model ve motor paketlerinin lisansları kendi dağıtımlarında korunur.

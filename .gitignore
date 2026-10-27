@@ -43,6 +43,7 @@ next-env.d.ts
 # Local tool state and generated work directories
 /.sites-runtime/
 /.agents/
+/.openai/
 /outputs/
 /work/
 

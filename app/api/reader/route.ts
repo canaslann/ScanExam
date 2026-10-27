@@ -1,16 +1,20 @@
 import {
-  getReaderStatus,
-  readLocalPaper,
   ReaderError,
   validateReaderInput,
 } from "@/lib/local-reader";
+import { readSelectedPaper, selectedReaderStatus, validateReaderChoice } from "@/lib/selected-reader";
 import { allowedReaderOrigin } from "@/lib/request-origin";
 
 export const runtime = "nodejs";
 const headers = { "Cache-Control": "no-store" };
 
-export async function GET() {
-  return Response.json(await getReaderStatus(), { headers });
+export async function GET(request: Request) {
+  try {
+    const choice = validateReaderChoice(new URL(request.url).searchParams.get("reader") ?? undefined);
+    return Response.json(await selectedReaderStatus(choice), { headers });
+  } catch (error) {
+    return Response.json({ error: (error as Error).message }, { status: error instanceof ReaderError ? error.status : 500, headers });
+  }
 }
 
 export async function POST(request: Request) {
@@ -53,8 +57,10 @@ export async function POST(request: Request) {
     }
     const { image, checkMode, regions, compactImage, questionCount } =
       validateReaderInput(body);
+    const choice = validateReaderChoice((body as Record<string, unknown>).reader);
     return Response.json(
-      await readLocalPaper(
+      await readSelectedPaper(
+        choice,
         image,
         checkMode,
         request.signal,

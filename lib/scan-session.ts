@@ -8,6 +8,7 @@ import {
   type ScanOutput,
 } from "./exam.ts";
 import { parseScore, sumScores, type CheckMode } from "./reader-contract.ts";
+import type { ReaderChoice } from "./reader-choice.ts";
 import { matchRoster, validateRosterStudents, type StudentRoster } from "./student-roster.ts";
 
 export type CellKey =
@@ -23,6 +24,7 @@ export type ScanRow = {
   edited: CellKey[];
   confirmed: CellKey[];
   checkMode: CheckMode;
+  reader?: ReaderChoice;
   captureSource?: "camera" | "gallery";
   error?: string;
   hasPhoto: boolean;
@@ -338,6 +340,7 @@ export function restoreSession(raw: unknown, resumeReading = true): ScanSession 
       typeof row.createdAt !== "string" ||
       !["queued", "reading", "done", "error"].includes(row.status) ||
       !["single", "double"].includes(row.checkMode) ||
+      (row.reader !== undefined && row.reader !== "glm" && row.reader !== "qwen") ||
       (row.captureSource!==undefined && !["camera","gallery"].includes(row.captureSource)) ||
       typeof row.hasPhoto !== "boolean" ||
       !Array.isArray(row.edited) ||

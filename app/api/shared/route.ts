@@ -65,7 +65,7 @@ export async function POST(request: Request) {
       if (!["jpeg", "png", "webp"].includes(metadata.format || "") || !metadata.width || !metadata.height
         || metadata.width * metadata.height > 24_000_000) throw new SharedError("Görüntü biçimi/boyutu desteklenmiyor.");
       result = sharedStore().mutate({ action: "capture", id: target.searchParams.get("id"), opId: target.searchParams.get("opId"),
-        examId: target.searchParams.get("examId"), mode: target.searchParams.get("mode"), source:target.searchParams.get("source") ?? undefined }, bytes);
+        examId: target.searchParams.get("examId"), mode: target.searchParams.get("mode"), reader: target.searchParams.get("reader") ?? undefined, source:target.searchParams.get("source") ?? undefined }, bytes);
     } else {
       let command;
       try { command = JSON.parse(new TextDecoder().decode(bytes)); }

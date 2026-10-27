@@ -20,11 +20,12 @@ import { approvalIssue, cellKeys, cellState, cellValue, editCell, exportIssues, 
 import { sharedPhoto } from "@/lib/shared-client";
 import { useSharedScan } from "@/hooks/use-shared-scan";
 import { StudentRosterUpload } from "@/components/student-roster-upload";
+import { READER_CHOICES, type ReaderChoice } from "@/lib/reader-choice";
 
 type ReaderStatus = { ready: boolean; model: string; message: string };
-async function readerStatus(): Promise<ReaderStatus> {
+async function readerStatus(reader: ReaderChoice): Promise<ReaderStatus> {
   try {
-    const response = await fetch("/api/reader", { signal: AbortSignal.timeout(5000), cache: "no-store" });
+    const response = await fetch(`/api/reader?reader=${reader}`, { signal: AbortSignal.timeout(5000), cache: "no-store" });
     if (!response.ok) throw new Error();
     return await response.json();
   } catch {
@@ -40,6 +41,7 @@ export function ExamApp() {
   const [importProgress, setImportProgress] = useState("");
   const importLock = useRef(false);
   const [mode, setMode] = useState<CheckMode>("single"), [status, setStatus] = useState<ReaderStatus | null>(null);
+  const [reader, setReader] = useState<ReaderChoice>("glm");
   const [selected, setSelected] = useState<string | null>(null), [photo, setPhoto] = useState<{ id: string; url: string } | null>(null);
   const [zoomedPhoto, setZoomedPhoto] = useState<string | null>(null);
   const photoZoom = selected !== null && zoomedPhoto === selected;
@@ -47,10 +49,10 @@ export function ExamApp() {
   const gallery = useRef<HTMLInputElement>(null), replacement = useRef<string | null>(null);
   useEffect(() => {
     let disposed = false;
-    const refresh = () => void readerStatus().then(value => { if (!disposed) setStatus(value); });
+    const refresh = () => void readerStatus(reader).then(value => { if (!disposed) setStatus(value); });
     refresh(); const timer = setInterval(refresh, 10_000);
     return () => { disposed = true; clearInterval(timer); };
-  }, []);
+  }, [reader]);
   useEffect(() => {
     let disposed = false, url: string | undefined;
     if (selected) void sharedPhoto(selected).then(blob => {
@@ -99,7 +101,7 @@ export function ExamApp() {
   async function capture(blob: Blob, replacementId?: string, source: "camera" | "gallery" = "camera") {
     if (!usable) throw new Error("Bilgisayar bağlantısı hazır değil; görüntü korunmalı.");
     if (uploads >= MAX_PENDING) throw new Error("Cihazdaki aktarım kuyruğu dolu; aktarımın tamamlanmasını bekleyin.");
-    await sync.capture(blob, mode, replacementId, source);
+    await sync.capture(blob, reader === "qwen" ? "single" : mode, replacementId, source, reader);
   }
   function approve(row: ScanRow) {
     void sync.command({ action: "approve", id: row.id, signature: rowSignature(row, sessionRef.current) })
@@ -301,6 +303,15 @@ export function ExamApp() {
               <CardTitle className="section-title"><span className="step-number">02</span><span>Görüntü ekleme yöntemi</span><span className="camera-badge"><span /> CANLI TARAMA</span></CardTitle>
             </CardHeader>
             <CardContent>
+              <div className="mb-4 space-y-2">
+                <Label htmlFor="reader-choice">Okuma modeli</Label>
+                <select id="reader-choice" value={reader} disabled={importing}
+                  onChange={event => { setReader(event.target.value as ReaderChoice); setStatus(null); }}
+                  className="w-full rounded-lg border border-input bg-muted p-2 text-foreground">
+                  {READER_CHOICES.map(choice => <option key={choice.value} value={choice.value}>{choice.label}</option>)}
+                </select>
+                <p className="text-xs text-muted-foreground">Yeni fotoğraflar seçtiğiniz modelle okunur. Kuyruktaki fotoğraflar kendi modeliyle devam eder.</p>
+              </div>
               <div className="mb-4 grid grid-cols-2 gap-2" role="group" aria-label="Görüntü ekleme yöntemi">
                 {([
                   ["stable", "Mevcut otomatik tarama"],
@@ -355,7 +366,7 @@ export function ExamApp() {
                   <PencilLine className="size-4" />
                   Elle satır ekle
                 </Button>
-                <label className="text-sm">
+                {reader === "glm" && <label className="text-sm">
                   Okuma:{" "}
                   <select
                     aria-label="Okuma kontrolü"
@@ -366,7 +377,7 @@ export function ExamApp() {
                     <option value="single">Tek · hızlı</option>
                     <option value="double">Çift · karşılaştırmalı</option>
                   </select>
-                </label>
+                </label>}
               </div>
               <input
                 ref={gallery}
@@ -432,7 +443,7 @@ export function ExamApp() {
                 size="sm"
                 variant="outline"
                 className="queue-check"
-                onClick={() => void readerStatus().then(setStatus)}
+                onClick={() => void readerStatus(reader).then(setStatus)}
               >
                 Okuyucuyu kontrol et
               </Button>
@@ -553,6 +564,7 @@ export function ExamApp() {
                       {row.draft.elapsedMs && (
                         <p>{(row.draft.elapsedMs / 1000).toFixed(1)} sn</p>
                       )}
+                      <p>{row.reader === "qwen" ? "Qwen3.5-9B" : "GLM-OCR"}</p>
                     </TableCell>
                     {cellKeys(session.pcMap.length).map((key) => (
                       <TableCell key={key} className="p-1">
